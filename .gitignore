@@ -1,0 +1,32 @@
+# Visual Studio / .NET build output
+.vs/
+**/bin/
+**/obj/
+*.user
+*.suo
+
+# Local toolchains and temporary build files
+.dotnet-sdk/
+.dotnet-cli/
+.dotnet-home/
+.nuget-packages/
+.nuget-temp.config
+.roslyn/
+.roslyn.nupkg
+.build-temp/
+.build-output/
+
+# Local releases and rollback installations
+artifacts/
+deployment/
+versions/
+current/
+
+# Device captures and user-generated curve archives
+*.log
+*.xlsx
+4G串口.txt
+
+# Local editor/analysis metadata
+.codeartsdoer/
+.codegraph/
