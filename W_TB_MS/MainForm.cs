@@ -31,6 +31,8 @@ namespace W_TB_jiankong
         private const double XAxisMinMarginSeconds = 1.0;     // 边距下限
         private const double MinTimeWindowSeconds = 10.0;     // 单点/跨度不足时的中心窗口宽度
         private const float CurveClickDistancePixels = 10;
+        private static readonly TimeSpan ChartRenderInterval = TimeSpan.FromMilliseconds(250);
+        private static readonly TimeSpan ChartAutoScaleInterval = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan CurveRetention = TimeSpan.FromHours(24);
         private static readonly TimeSpan CurvePruneInterval = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan AutomaticArchiveInterval = TimeSpan.FromHours(6);
@@ -53,7 +55,6 @@ namespace W_TB_jiankong
         private readonly Dictionary<ushort, ScottPlot.IPlottable> _numericCurvePlottables = new();
         private readonly Dictionary<ushort, List<double>> _numericCurveData = new();
         private readonly Dictionary<(ushort Address, int Bit), ScottPlot.IPlottable> _bitCurvePlottables = new();
-        private readonly Dictionary<(ushort Address, int Bit), List<double>> _bitCurveData = new();
         // 每次采样保存全部8个BIT寄存器的完整16位原始值，与曲线是否勾选无关。
         private readonly Dictionary<ushort, List<ushort>> _allBitRegisterData = new();
         private bool _followCurrentTime = true;
@@ -64,6 +65,8 @@ namespace W_TB_jiankong
         private DateTime _automaticArchiveSegmentStart;
         private DateTime _nextAutomaticArchiveAt;
         private DateTime _nextAutomaticArchiveRetryAt = DateTime.MinValue;
+        private long _lastChartRenderTick;
+        private DateTime _lastChartAutoScaleAt = DateTime.MinValue;
         private double _lastSavedSampleTime = double.NegativeInfinity;
         private Task? _activeAutomaticArchiveTask;
         private bool _automaticArchiveInProgress;
@@ -173,6 +176,133 @@ namespace W_TB_jiankong
             NumericCurveValueKind ValueKind,
             bool SelectedByDefault = false,
             bool UseRightAxis = false);
+
+        private sealed class BitScatterSource : ScottPlot.IScatterSource
+        {
+            private readonly List<double> _times;
+            private readonly List<ushort> _registerValues;
+            private readonly int _bit;
+            private readonly IReadOnlyList<ScottPlot.Coordinates> _points;
+            private int _minRenderIndex;
+            private int _maxRenderIndex = int.MaxValue;
+
+            internal BitScatterSource(List<double> times, List<ushort> registerValues, int bit)
+            {
+                _times = times;
+                _registerValues = registerValues;
+                _bit = bit;
+                _points = new CoordinatesView(this);
+            }
+
+            public IReadOnlyList<ScottPlot.Coordinates> GetScatterPoints() => _points;
+
+            public ScottPlot.DataPoint GetNearest(
+                ScottPlot.Coordinates mouseCoordinates,
+                ScottPlot.RenderDetails renderDetails,
+                float maxDistance)
+            {
+                int index = FindNearestIndex(mouseCoordinates.X);
+                return IsWithinDistance(index, mouseCoordinates, renderDetails, maxDistance)
+                    ? new ScottPlot.DataPoint(GetPoint(index), index)
+                    : ScottPlot.DataPoint.None;
+            }
+
+            public ScottPlot.DataPoint GetNearestX(
+                ScottPlot.Coordinates mouseCoordinates,
+                ScottPlot.RenderDetails renderDetails,
+                float maxDistance)
+            {
+                int index = FindNearestIndex(mouseCoordinates.X);
+                if (index < 0 || !double.IsFinite(renderDetails.PxPerUnitX))
+                    return ScottPlot.DataPoint.None;
+
+                double distance = Math.Abs((_times[index] - mouseCoordinates.X) * renderDetails.PxPerUnitX);
+                return distance <= maxDistance
+                    ? new ScottPlot.DataPoint(GetPoint(index), index)
+                    : ScottPlot.DataPoint.None;
+            }
+
+            public ScottPlot.CoordinateRange GetLimitsX() =>
+                _times.Count == 0
+                    ? new ScottPlot.CoordinateRange(0, 1)
+                    : new ScottPlot.CoordinateRange(_times[0], _times[^1]);
+
+            public ScottPlot.CoordinateRange GetLimitsY() =>
+                new ScottPlot.CoordinateRange(0, 1);
+
+            public ScottPlot.AxisLimits GetLimits() =>
+                new(GetLimitsX().Min, GetLimitsX().Max, 0, 1);
+
+            public int MinRenderIndex
+            {
+                get => _minRenderIndex;
+                set => _minRenderIndex = Math.Max(0, value);
+            }
+
+            public int MaxRenderIndex
+            {
+                get => _maxRenderIndex;
+                set => _maxRenderIndex = value;
+            }
+
+            private ScottPlot.Coordinates GetPoint(int index) =>
+                new(_times[index], (_registerValues[index] & (1 << _bit)) == 0 ? 0.0 : 1.0);
+
+            private int FindNearestIndex(double x)
+            {
+                if (_times.Count == 0 || _registerValues.Count == 0)
+                    return -1;
+
+                int low = Math.Max(0, _minRenderIndex);
+                int high = Math.Min(Math.Min(_times.Count, _registerValues.Count) - 1, _maxRenderIndex);
+                if (high < low)
+                    return -1;
+                while (low <= high)
+                {
+                    int middle = low + (high - low) / 2;
+                    if (_times[middle] < x) low = middle + 1;
+                    else if (_times[middle] > x) high = middle - 1;
+                    else return middle;
+                }
+                if (low > high) return Math.Clamp(low, Math.Max(0, _minRenderIndex), high);
+                return low;
+            }
+
+            private bool IsWithinDistance(
+                int index,
+                ScottPlot.Coordinates mouseCoordinates,
+                ScottPlot.RenderDetails renderDetails,
+                float maxDistance)
+            {
+                if (index < 0 || !double.IsFinite(renderDetails.PxPerUnitX)
+                    || !double.IsFinite(renderDetails.PxPerUnitY))
+                    return false;
+                ScottPlot.Coordinates point = GetPoint(index);
+                double dx = (point.X - mouseCoordinates.X) * renderDetails.PxPerUnitX;
+                double dy = (point.Y - mouseCoordinates.Y) * renderDetails.PxPerUnitY;
+                return Math.Sqrt(dx * dx + dy * dy) <= maxDistance;
+            }
+
+            private sealed class CoordinatesView : IReadOnlyList<ScottPlot.Coordinates>
+            {
+                private readonly BitScatterSource _source;
+
+                internal CoordinatesView(BitScatterSource source) => _source = source;
+
+                public int Count => Math.Min(_source._times.Count, _source._registerValues.Count);
+
+                public ScottPlot.Coordinates this[int index] => _source.GetPoint(index);
+
+                public IEnumerator<ScottPlot.Coordinates> GetEnumerator()
+                {
+                    for (int index = 0; index < Count; index++)
+                        yield return this[index];
+                }
+
+                System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+                    GetEnumerator();
+            }
+        }
 
         private static readonly IReadOnlyList<NumericCurveDefinition> NumericCurveDefinitions = new NumericCurveDefinition[]
         {
@@ -378,7 +508,7 @@ namespace W_TB_jiankong
 
             var lblSoftwareVersion = new Label
             {
-                Text = $"W_TB_MS  v{SoftwareVersion}",
+                Text = $"版本 v{SoftwareVersion}",
                 Location = new Point(10, 8),
                 AutoSize = true,
                 Font = new Font("Microsoft YaHei", 10F, FontStyle.Bold),
@@ -872,7 +1002,7 @@ namespace W_TB_jiankong
             chartTabs.TabPages.Add(numericChartPage);
             chartTabs.TabPages.Add(stateChartPage);
             chartTabs.TabPages.Add(bitChartPage);
-            chartTabs.SelectedIndexChanged += (s, e) => RefreshVisibleChart();
+            chartTabs.SelectedIndexChanged += (s, e) => RefreshVisibleChart(true);
 
             splitRight.Panel1.Controls.Add(panelStatus);
             splitRight.Panel2.Controls.Add(chartTabs);
@@ -953,6 +1083,7 @@ namespace W_TB_jiankong
         {
             try
             {
+                _lastChartAutoScaleAt = DateTime.MinValue;
                 AutoScaleChart();
                 AutoScaleBitChart(bitFormsPlot);
                 AutoScaleBitChart(stateFormsPlot);
@@ -960,20 +1091,41 @@ namespace W_TB_jiankong
             catch { }
         }
 
-        private void RefreshVisibleChart()
+        private void RefreshVisibleChart(bool force = false)
         {
             try
             {
+                long nowTick = Environment.TickCount64;
+                if (!force && nowTick - _lastChartRenderTick < ChartRenderInterval.TotalMilliseconds)
+                    return;
+                _lastChartRenderTick = nowTick;
+                bool shouldAutoScale = force
+                    || DateTime.UtcNow - _lastChartAutoScaleAt >= ChartAutoScaleInterval;
                 switch (chartTabs.SelectedIndex)
                 {
                     case 0:
-                        if (_followCurrentTime) AutoScaleChart(); else formsPlot.Refresh();
+                        if (_followCurrentTime && shouldAutoScale)
+                        {
+                            _lastChartAutoScaleAt = DateTime.UtcNow;
+                            AutoScaleChart();
+                        }
+                        else formsPlot.Refresh();
                         break;
                     case 1:
-                        if (_followStateCurrentTime) AutoScaleBitChart(stateFormsPlot); else stateFormsPlot.Refresh();
+                        if (_followStateCurrentTime && shouldAutoScale)
+                        {
+                            _lastChartAutoScaleAt = DateTime.UtcNow;
+                            AutoScaleBitChart(stateFormsPlot);
+                        }
+                        else stateFormsPlot.Refresh();
                         break;
                     case 2:
-                        if (_followBitCurrentTime) AutoScaleBitChart(bitFormsPlot); else bitFormsPlot.Refresh();
+                        if (_followBitCurrentTime && shouldAutoScale)
+                        {
+                            _lastChartAutoScaleAt = DateTime.UtcNow;
+                            AutoScaleBitChart(bitFormsPlot);
+                        }
+                        else bitFormsPlot.Refresh();
                         break;
                 }
             }
@@ -1749,8 +1901,6 @@ namespace W_TB_jiankong
             _timeData.Clear();
             foreach (List<double> numericData in _numericCurveData.Values)
                 numericData.Clear();
-            foreach (List<double> bitData in _bitCurveData.Values)
-                bitData.Clear();
             foreach (List<ushort> registerData in _allBitRegisterData.Values)
                 registerData.Clear();
             _nextCurvePruneAt = DateTime.MinValue;
@@ -2021,12 +2171,6 @@ namespace W_TB_jiankong
             foreach (ushort address in BitCurveRegisterAddresses)
                 _allBitRegisterData[address].Add(values[address]);
 
-            foreach (var pair in _bitCurveData)
-            {
-                ushort rawValue = values[pair.Key.Address];
-                pair.Value.Add((rawValue & (1 << pair.Key.Bit)) != 0 ? 1.0 : 0.0);
-            }
-
             PruneExpiredCurveData(sampleTime);
             if (_activeAutomaticArchiveTask == null || _activeAutomaticArchiveTask.IsCompleted)
                 _activeAutomaticArchiveTask = TryAutomaticArchiveAsync(sampleTime);
@@ -2047,8 +2191,6 @@ namespace W_TB_jiankong
             _timeData.RemoveRange(0, removeCount);
             foreach (List<double> numericData in _numericCurveData.Values)
                 numericData.RemoveRange(0, removeCount);
-            foreach (List<double> bitData in _bitCurveData.Values)
-                bitData.RemoveRange(0, removeCount);
             foreach (List<ushort> registerData in _allBitRegisterData.Values)
                 registerData.RemoveRange(0, removeCount);
 
@@ -2376,7 +2518,6 @@ namespace W_TB_jiankong
                     : bitFormsPlot;
                 existingPlot.Plot.Remove(existingCurve);
                 _bitCurvePlottables.Remove(key);
-                _bitCurveData.Remove(key);
                 return;
             }
             if (!visible)
@@ -2385,11 +2526,11 @@ namespace W_TB_jiankong
             ScottPlot.WinForms.FormsPlot targetPlot = IsStatusCurve(definition)
                 ? stateFormsPlot
                 : bitFormsPlot;
-            List<double> curveData = DecodeBitValues(
+            var source = new BitScatterSource(
+                _timeData,
                 _allBitRegisterData[definition.Address],
                 definition.Bit);
-            _bitCurveData[key] = curveData;
-            var scatter = targetPlot.Plot.Add.Scatter(_timeData, curveData);
+            var scatter = targetPlot.Plot.Add.Scatter(source);
             scatter.LegendText = definition.Name;
             scatter.MarkerSize = 0;
             _bitCurvePlottables[key] = scatter;
