@@ -77,6 +77,23 @@ public class ChartHoverTests
         Assert.Equal(10000.0, MainForm.DecodeNumericCurveValue(30235, values), 6);
     }
 
+    [Theory]
+    [InlineData(0, "0 min 00 s")]
+    [InlineData(59, "0 min 59 s")]
+    [InlineData(60, "1 min 00 s")]
+    [InlineData(3661, "61 min 01 s")]
+    public void FormatDurationSeconds_UsesMinutesAndPaddedSeconds(double seconds, string expected)
+    {
+        Assert.Equal(expected, MainForm.FormatDurationSeconds(seconds));
+    }
+
+    [Fact]
+    public void FormatDurationSeconds_ClampsInvalidNegativeValue()
+    {
+        Assert.Equal("0 min 00 s", MainForm.FormatDurationSeconds(-1));
+        Assert.Equal("-- min -- s", MainForm.FormatDurationSeconds(double.NaN));
+    }
+
     [Fact]
     public void CanRecordCurveSample_RequiresEveryCurrentRegister()
     {

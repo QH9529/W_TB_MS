@@ -209,15 +209,21 @@ namespace W_TB_jiankong
                 return;
             }
 
-            string valueText = selectedPoint.Y.ToString("0.###", CultureInfo.CurrentCulture);
+            string valueText = MainForm.IsDurationAddress(selectedSeries.Address)
+                ? MainForm.FormatDurationSeconds(selectedPoint.Y)
+                : selectedPoint.Y.ToString("0.###", CultureInfo.CurrentCulture);
+            string unitSuffix = MainForm.IsDurationAddress(selectedSeries.Address)
+                ? string.Empty
+                : $" {selectedSeries.Unit}";
             if (selectedSeries.Kind == CurveSeriesKind.Bit)
             {
                 int bitValue = selectedPoint.Y >= 0.5 ? 1 : 0;
                 string state = bitValue == 1 ? selectedSeries.OneText : selectedSeries.ZeroText;
                 valueText = $"{bitValue} / {state}";
+                unitSuffix = $" {selectedSeries.Unit}";
             }
             string text = $"时间：{_data.Times[selectedPoint.Index]:yyyy-MM-dd HH:mm:ss.fff}\n" +
-                $"{selectedSeries.Name}：{valueText} {selectedSeries.Unit}".TrimEnd();
+                $"{selectedSeries.Name}：{valueText}{unitSuffix}".TrimEnd();
 
             int tooltipX = mouseEvent.X + 16;
             int tooltipY = mouseEvent.Y + 20;

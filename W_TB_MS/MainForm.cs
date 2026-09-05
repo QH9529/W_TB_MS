@@ -70,8 +70,7 @@ namespace W_TB_jiankong
         private DateTime _nextAutomaticArchiveRetryAt = DateTime.MinValue;
         private long _lastChartRenderTick;
         private DateTime _lastChartAutoScaleAt = DateTime.MinValue;
-        // 交互期间暂停轮询触发的曲线重绘，避免拖动/缩放时视图被抢回。
-        private bool _chartInteractionInProgress;
+        // 交互期间用令牌协调鼠标事件，避免异步 MouseUp 清理新一轮操作。
         private long _chartInteractionToken;
         private ScottPlot.WinForms.FormsPlot? _chartPointerDownPlot;
         private Point _chartPointerDownLocation;
@@ -89,7 +88,7 @@ namespace W_TB_jiankong
         internal static TimeSpan CurveRetentionDuration => CurveRetention;
         internal static TimeSpan AutomaticArchiveIntervalDuration => AutomaticArchiveInterval;
         internal static string SoftwareVersion =>
-            typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+            typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.1";
 
 
         // --- 串口配置 ---
@@ -346,8 +345,8 @@ namespace W_TB_jiankong
             new(30225, "频率与转速", "下风机转速", "RPM", NumericCurveValueKind.Unsigned),
             new(30234, "频率与转速", "压缩机目标频率", "Hz", NumericCurveValueKind.Unsigned),
 
-            new(30219, "执行器", "主路EXV开度", "步", NumericCurveValueKind.Unsigned),
-            new(30220, "执行器", "辅路EXV开度", "步", NumericCurveValueKind.Unsigned),
+            new(30219, "工作状态", "主路EXV开度", "步", NumericCurveValueKind.Unsigned),
+            new(30220, "工作状态", "辅路EXV开度", "步", NumericCurveValueKind.Unsigned),
             new(30223, "执行器", "电动三通球阀1", "步", NumericCurveValueKind.Unsigned),
             new(30224, "执行器", "电动三通球阀2", "步", NumericCurveValueKind.Unsigned),
 
@@ -359,8 +358,8 @@ namespace W_TB_jiankong
             new(30240, "电气与能耗", "压缩机电流", "A", NumericCurveValueKind.UnsignedTenths),
             new(30241, "电气与能耗", "DC风机电流", "A", NumericCurveValueKind.UnsignedTenths),
 
-            new(30235, "运行计时", "压缩机运行时间", "s", NumericCurveValueKind.UInt32LowHigh),
-            new(30237, "运行计时", "压缩机停止时间", "s", NumericCurveValueKind.UInt32LowHigh)
+            new(30235, "工作状态", "压缩机运行时间", "s", NumericCurveValueKind.UInt32LowHigh),
+            new(30237, "工作状态", "压缩机停止时间", "s", NumericCurveValueKind.UInt32LowHigh)
         };
 
         internal static IReadOnlyList<ushort> NumericCurveAddresses =>
@@ -1229,7 +1228,6 @@ namespace W_TB_jiankong
 
         private void BeginChartInteraction()
         {
-            _chartInteractionInProgress = true;
             _chartInteractionToken++;
         }
 
@@ -1238,8 +1236,6 @@ namespace W_TB_jiankong
             long token = _chartInteractionToken;
             if (!plot.IsHandleCreated || plot.IsDisposed)
             {
-                if (token == _chartInteractionToken)
-                    _chartInteractionInProgress = false;
                 return;
             }
 
@@ -1250,7 +1246,6 @@ namespace W_TB_jiankong
                     // 新一轮拖动已经开始时，旧事件不得释放新锁。
                     if (token != _chartInteractionToken || plot.IsDisposed)
                         return;
-                    _chartInteractionInProgress = false;
                     _chartPointerDownPlot = null;
                     _chartPointerDragDetected = false;
                     UpdateChartRenderRange(plot);
@@ -1259,8 +1254,7 @@ namespace W_TB_jiankong
             }
             catch (InvalidOperationException)
             {
-                if (token == _chartInteractionToken)
-                    _chartInteractionInProgress = false;
+                // 窗体关闭时可能无法再排队 UI 更新。
             }
         }
 
@@ -1268,18 +1262,6 @@ namespace W_TB_jiankong
         {
             try
             {
-                if (_chartInteractionInProgress)
-                {
-                    // 某些窗口切换路径可能丢失 MouseUp；没有按键时立即解除保护，避免曲线长期不刷新。
-                    if (Control.MouseButtons == MouseButtons.None)
-                    {
-                        _chartInteractionInProgress = false;
-                        _chartPointerDownPlot = null;
-                        _chartPointerDragDetected = false;
-                    }
-                    else
-                        return;
-                }
                 long nowTick = Environment.TickCount64;
                 if (!force && nowTick - _lastChartRenderTick < ChartRenderInterval.TotalMilliseconds)
                     return;
@@ -1294,7 +1276,12 @@ namespace W_TB_jiankong
                             _lastChartAutoScaleAt = DateTime.UtcNow;
                             AutoScaleChart();
                         }
-                        else formsPlot.Refresh();
+                        else
+                        {
+                            // 用户拖动/缩放后保留当前视口，同时扩展可见数据范围并继续实时重绘。
+                            UpdateChartRenderRange(formsPlot);
+                            formsPlot.Refresh();
+                        }
                         break;
                     case 1:
                         if (_followStateCurrentTime && shouldAutoScale)
@@ -1302,7 +1289,11 @@ namespace W_TB_jiankong
                             _lastChartAutoScaleAt = DateTime.UtcNow;
                             AutoScaleBitChart(stateFormsPlot);
                         }
-                        else stateFormsPlot.Refresh();
+                        else
+                        {
+                            UpdateChartRenderRange(stateFormsPlot);
+                            stateFormsPlot.Refresh();
+                        }
                         break;
                     case 2:
                         if (_followBitCurrentTime && shouldAutoScale)
@@ -1310,7 +1301,11 @@ namespace W_TB_jiankong
                             _lastChartAutoScaleAt = DateTime.UtcNow;
                             AutoScaleBitChart(bitFormsPlot);
                         }
-                        else bitFormsPlot.Refresh();
+                        else
+                        {
+                            UpdateChartRenderRange(bitFormsPlot);
+                            bitFormsPlot.Refresh();
+                        }
                         break;
                 }
             }
@@ -1468,6 +1463,11 @@ namespace W_TB_jiankong
             AddReg(30109, "压缩机频率（快速）", "Hz");
             AddReg(30222, "上风机转速", "RPM");
             AddReg(30225, "下风机转速", "RPM");
+            // The value cell includes the minute/second suffix for these durations.
+            AddReg(30235, "压缩机运行时间", "");
+            AddReg(30237, "压缩机停止时间", "");
+            AddReg(30219, "主路EXV开度", "步");
+            AddReg(30220, "辅路EXV开度", "步");
             AddReg(30223, "电动三通球阀1", "步");
             AddReg(30224, "电动三通球阀2", "步");
 
@@ -1495,8 +1495,6 @@ namespace W_TB_jiankong
             AddReg(30215, "低压压力", "bar");
             AddReg(30216, "高压压力", "bar");
             AddReg(30217, "累计耗电量", "kWh");
-            AddReg(30219, "主路EXV开度", "步");
-            AddReg(30220, "辅路EXV开度", "步");
             AddReg(30226, "热水上温度", "℃");
             AddReg(30227, "热水中温度", "℃");
             AddReg(30228, "热水下温度", "℃");
@@ -1505,8 +1503,6 @@ namespace W_TB_jiankong
             AddReg(30231, "AC电压", "V");
             AddReg(30232, "AC电流", "A");
             AddReg(30233, "当前功率", "W");
-            AddReg(30235, "压缩机运行时间", "s");
-            AddReg(30237, "压缩机停止时间", "s");
             AddReg(30239, "DC电压", "V");
             AddReg(30240, "压缩机电流", "A");
             AddReg(30241, "DC风机电流", "A");
@@ -2694,8 +2690,26 @@ namespace W_TB_jiankong
             return DecodeNumericCurveValue(definition, values);
         }
 
+        internal static bool IsDurationAddress(ushort address) => address is 30235 or 30237;
+
+        internal static string FormatDurationSeconds(double seconds)
+        {
+            if (!double.IsFinite(seconds))
+                return "-- min -- s";
+
+            // Duration registers are non-negative whole seconds. Clamp malformed
+            // values so a transient invalid sample cannot produce a negative time.
+            long totalSeconds = Math.Max(0L, (long)Math.Round(seconds, MidpointRounding.AwayFromZero));
+            long minutes = totalSeconds / 60;
+            long remainingSeconds = totalSeconds % 60;
+            return $"{minutes} min {remainingSeconds:00} s";
+        }
+
         private static string FormatNumericCurveValue(NumericCurveDefinition definition, double value)
         {
+            if (IsDurationAddress(definition.Address))
+                return FormatDurationSeconds(value);
+
             string format = definition.ValueKind is NumericCurveValueKind.SignedTenths
                 or NumericCurveValueKind.UnsignedTenths
                 or NumericCurveValueKind.UInt32HighLowTenths
@@ -2806,10 +2820,13 @@ namespace W_TB_jiankong
 
             string value = FormatNumericCurveValue(selectedDefinition, selectedPoint.Y);
             string time = DateTime.FromOADate(_timeData[selectedPoint.Index]).ToString("HH:mm:ss.fff");
+            string unitSuffix = IsDurationAddress(selectedDefinition.Address)
+                ? string.Empty
+                : $" {selectedDefinition.Unit}";
             ShowCurveToolTip(
                 formsPlot,
                 e,
-                $"时间：{time}\n{selectedDefinition.Name}：{value} {selectedDefinition.Unit}");
+                $"时间：{time}\n{selectedDefinition.Name}：{value}{unitSuffix}");
         }
 
         private void BitFormsPlot_MouseMove(object? sender, MouseEventArgs e)

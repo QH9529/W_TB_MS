@@ -1,12 +1,12 @@
 # W_TB_MS 使用说明
 
-W_TB_MS 是用于 W 系列热泵设备的 Windows Modbus RTU 监控软件。本说明适用于 `W_TB_MS v1.0.0`。
+W_TB_MS 是用于 W 系列热泵设备的 Windows Modbus RTU 监控软件。本说明适用于 `W_TB_MS v1.0.1`。
 
 ## 1. 安装与启动
 
 ### 使用安装包
 
-运行 `W_TB_MS-v1.0.0-Setup.exe`，选择安装目录后点击“安装”。安装器会自动判断 Windows 架构：
+运行 `W_TB_MS-v1.0.1-Setup.exe`，选择安装目录后点击“安装”。安装器会自动判断 Windows 架构：
 
 - 64 位 Windows 安装 `win-x64` 程序；
 - 32 位 Windows 安装 `win-x86` 程序；
