@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Version,
+    [ValidateSet("win-x86", "win-x64")]
     [string]$Runtime = "win-x64"
 )
 

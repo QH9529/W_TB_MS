@@ -32,7 +32,14 @@ dotnet test W_TB_MS.Tests/W_TB_jiankong.Tests.csproj -c Release --no-build
 ./scripts/Build-Release.ps1
 ```
 
-输出位于 `artifacts/`，包含版本 ZIP 和 SHA256 校验文件。发布包使用 `win-x64` 自包含文件夹，不依赖目标电脑预装 .NET。
+输出位于 `artifacts/`，包含版本 ZIP 和 SHA256 校验文件。发布包支持 `win-x86` 和 `win-x64` 自包含文件夹，不依赖目标电脑预装 .NET。按指定架构生成示例：
+
+```powershell
+./scripts/Build-Release.ps1 -Runtime win-x86
+./scripts/Build-Release.ps1 -Runtime win-x64
+```
+
+安装器使用 x86 引导程序，可在两种 Windows 系统上运行，并在 64 位系统自动安装 x64 程序。
 
 ## 安装和回档
 

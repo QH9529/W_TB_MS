@@ -6,6 +6,7 @@ using System.Windows.Forms;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Globalization;
 using W_TB_jiankong.Modbus;
 using W_TB_jiankong.Models;
@@ -25,8 +26,10 @@ namespace W_TB_jiankong
 
         // --- 实时曲线 ---
         private const int GridColumnsTotalWidth = 434;   // 参数、数值、单位、地址、属性、操作列总宽度
+        private const int GridColumnsCompactWidth = 326; // 隐藏地址、属性后的可见列总宽度
         private const int GridChromeWidth = 22;          // 垂直滚动条 + 边框余量
         private const int LeftPanelTargetWidth = GridColumnsTotalWidth + GridChromeWidth;
+        private const int LeftPanelCompactWidth = GridColumnsCompactWidth + GridChromeWidth;
         private const double XAxisMarginFraction = 0.05;      // 数据跨度5%两侧边距
         private const double XAxisMinMarginSeconds = 1.0;     // 边距下限
         private const double MinTimeWindowSeconds = 10.0;     // 单点/跨度不足时的中心窗口宽度
@@ -67,6 +70,12 @@ namespace W_TB_jiankong
         private DateTime _nextAutomaticArchiveRetryAt = DateTime.MinValue;
         private long _lastChartRenderTick;
         private DateTime _lastChartAutoScaleAt = DateTime.MinValue;
+        // 交互期间暂停轮询触发的曲线重绘，避免拖动/缩放时视图被抢回。
+        private bool _chartInteractionInProgress;
+        private long _chartInteractionToken;
+        private ScottPlot.WinForms.FormsPlot? _chartPointerDownPlot;
+        private Point _chartPointerDownLocation;
+        private bool _chartPointerDragDetected;
         private double _lastSavedSampleTime = double.NegativeInfinity;
         private Task? _activeAutomaticArchiveTask;
         private bool _automaticArchiveInProgress;
@@ -117,6 +126,8 @@ namespace W_TB_jiankong
         private Panel panelLog = null!;
         private Button btnToggleLog = null!;
         private Button btnArchiveFolder = null!;
+        private System.Windows.Forms.Timer? _logFlushTimer;
+        private readonly ConcurrentQueue<string> _pendingLogLines = new();
 
         private bool _logVisible = true;
 
@@ -489,12 +500,34 @@ namespace W_TB_jiankong
             _archiveFolder = ArchiveSettingsStore.LoadArchiveFolder();
             InitializeComponent();
             _modbus.FrameObserved += AppendLog;
-            Shown += (s, e) => ChooseArchiveFolder();
+            // 首次启动只显示非阻塞提醒，避免系统文件夹选择框停留在后台而遮住主界面。
+            Shown += (s, e) => BeginInvoke(new Action(() =>
+            {
+                if (!IsDisposed && !Disposing)
+                {
+                    if (string.IsNullOrWhiteSpace(_archiveFolder))
+                    {
+                        _toolTip.Show(
+                            "请点击“存档路径”选择曲线自动存档目录",
+                            btnArchiveFolder,
+                            0,
+                            btnArchiveFolder.Height + 4,
+                            7000);
+                    }
+                }
+            }));
+            Shown += (s, e) =>
+            {
+                WindowState = FormWindowState.Normal;
+                Activate();
+                BringToFront();
+            };
             FormClosing += MainForm_FormClosing;
         }
 
         private void InitializeComponent()
         {
+            // 标题栏统一显示软件名称和版本号，顶部工具栏不再重复显示版本。
             Text = $"W_TB_MS v{SoftwareVersion}";
             Size = new Size(1200, 800);
             StartPosition = FormStartPosition.CenterScreen;
@@ -504,42 +537,45 @@ namespace W_TB_jiankong
             // =============================================
             //  顶部：串口配置栏
             // =============================================
-            var panelTop = new Panel { Dock = DockStyle.Top, Height = 110, Padding = new Padding(10) };
-
-            var lblSoftwareVersion = new Label
+            var panelTop = new Panel
             {
-                Text = $"版本 v{SoftwareVersion}",
-                Location = new Point(10, 8),
-                AutoSize = true,
-                Font = new Font("Microsoft YaHei", 10F, FontStyle.Bold),
-                ForeColor = Color.FromArgb(45, 90, 150)
+                Dock = DockStyle.Top,
+                Height = 82,
+                Padding = new Padding(10),
+                Font = new Font("Microsoft YaHei", 9F)
+            };
+            panelTop.Paint += (s, e) =>
+            {
+                using var separatorPen = new Pen(Color.Silver, 1F);
+                int y = panelTop.ClientSize.Height - 1;
+                e.Graphics.DrawLine(separatorPen, 0, y, panelTop.ClientSize.Width - 1, y);
             };
 
-            var lblPort = new Label { Text = "串口:", Location = new Point(10, 45), AutoSize = true };
-            cmbPort = new ComboBox { Location = new Point(55, 42), Width = 110, DropDownStyle = ComboBoxStyle.DropDownList, ItemHeight = 25 };
+            var lblPort = new Label { Text = "串口:", Location = new Point(10, 20), AutoSize = true };
+            cmbPort = new ComboBox { Location = new Point(55, 17), Width = 110, DropDownStyle = ComboBoxStyle.DropDownList, ItemHeight = 25 };
 
-            btnRefresh = new Button { Text = "刷新", Location = new Point(172, 41), Width = 60, Height = 28 };
+            btnRefresh = new Button { Text = "刷新", Location = new Point(172, 16), Width = 60, Height = 28 };
             btnRefresh.Click += (s, e) => RefreshPorts();
 
-            var lblBaud = new Label { Text = "波特率:", Location = new Point(248, 45), AutoSize = true };
-            cmbBaudRate = new ComboBox { Location = new Point(303, 42), Width = 95, DropDownStyle = ComboBoxStyle.DropDownList, ItemHeight = 25 };
+            var lblBaud = new Label { Text = "波特率:", Location = new Point(248, 20), AutoSize = true };
+            cmbBaudRate = new ComboBox { Location = new Point(303, 17), Width = 95, DropDownStyle = ComboBoxStyle.DropDownList, ItemHeight = 25 };
             cmbBaudRate.Items.AddRange(new object[] { "2400", "4800", "9600", "19200", "38400", "115200" });
             cmbBaudRate.SelectedIndex = 2;
 
-            var lblSlave = new Label { Text = "从机地址:", Location = new Point(413, 45), AutoSize = true };
-            cmbSlaveAddr = new ComboBox { Location = new Point(483, 42), Width = 85, DropDownStyle = ComboBoxStyle.DropDownList, ItemHeight = 25 };
+            var lblSlave = new Label { Text = "从机地址:", Location = new Point(413, 20), AutoSize = true };
+            cmbSlaveAddr = new ComboBox { Location = new Point(483, 17), Width = 85, DropDownStyle = ComboBoxStyle.DropDownList, ItemHeight = 25 };
             cmbSlaveAddr.Items.AddRange(new object[] { "0xF1", "0xF2", "0xF3", "0xF4" });
             cmbSlaveAddr.SelectedIndex = 0;
             _toolTip.SetToolTip(cmbSlaveAddr, "热泵拨码地址：00=F1，01=F2，10=F3，11=F4");
 
-            var lblPoll = new Label { Text = "轮询(ms):", Location = new Point(583, 45), AutoSize = true };
-            nudInterval = new NumericUpDown { Location = new Point(655, 42), Width = 80, Height = 28, Minimum = 500, Maximum = 10000, Value = 2000, Increment = 500 };
+            var lblPoll = new Label { Text = "轮询(ms):", Location = new Point(583, 20), AutoSize = true };
+            nudInterval = new NumericUpDown { Location = new Point(655, 17), Width = 80, Height = 28, Minimum = 500, Maximum = 10000, Value = 2000, Increment = 500 };
 
 
-            btnConnect = new Button { Text = "连接", Location = new Point(750, 41), Width = 80, Height = 28 };
+            btnConnect = new Button { Text = "连接", Location = new Point(750, 16), Width = 80, Height = 28 };
             btnConnect.Click += BtnConnect_Click;
 
-            lblConnIndicator = new Label { Text = "", Location = new Point(836, 45), AutoSize = true, Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold), ForeColor = Color.Gray };
+            lblConnIndicator = new Label { Text = "", Location = new Point(836, 20), AutoSize = true, Font = new Font("Microsoft YaHei", 9F, FontStyle.Bold), ForeColor = Color.Gray };
 
             lblStatus = new Label { Text = "未连接", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(0, 4, 18, 0) };
             lblWorkMode = new Label { Text = "工作状态: --", AutoSize = true, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold), Margin = new Padding(0, 4, 18, 0) };
@@ -560,7 +596,6 @@ namespace W_TB_jiankong
             });
 
             panelTop.Controls.AddRange(new Control[] {
-                lblSoftwareVersion,
                 lblPort, cmbPort, btnRefresh, lblBaud, cmbBaudRate,
                 lblSlave, cmbSlaveAddr, lblPoll, nudInterval, btnConnect,
                 lblConnIndicator, connectionSummary
@@ -575,10 +610,7 @@ namespace W_TB_jiankong
             var lblLogTitle = new Label { Text = "📋 通信日志", Location = new Point(5, 8), AutoSize = true, Font = new Font("Microsoft YaHei", 10, FontStyle.Bold) };
             btnToggleLog = new Button { Text = "▼ 隐藏", Location = new Point(panelLog.Width - 90, 4), Width = 85, Height = 28, Anchor = AnchorStyles.Top | AnchorStyles.Right, FlatStyle = FlatStyle.Flat, Font = new Font("Microsoft YaHei", 9) };
             btnToggleLog.Click += (s, e) => ToggleLog();
-            btnArchiveFolder = new Button { Text = "存档路径", Location = new Point(panelLog.Width - 185, 4), Width = 90, Height = 28, Anchor = AnchorStyles.Top | AnchorStyles.Right, FlatStyle = FlatStyle.Flat, Font = new Font("Microsoft YaHei", 9) };
-            btnArchiveFolder.Click += (s, e) => ChooseArchiveFolder();
-            _toolTip.SetToolTip(btnArchiveFolder, _archiveFolder);
-            logHeader.Controls.AddRange(new Control[] { lblLogTitle, btnArchiveFolder, btnToggleLog });
+            logHeader.Controls.AddRange(new Control[] { lblLogTitle, btnToggleLog });
 
             rtbLog = new RichTextBox
             {
@@ -592,6 +624,9 @@ namespace W_TB_jiankong
             };
             panelLog.Controls.Add(rtbLog);
             panelLog.Controls.Add(logHeader);
+            _logFlushTimer = new System.Windows.Forms.Timer { Interval = 150 };
+            _logFlushTimer.Tick += (s, e) => FlushPendingLogLines();
+            _logFlushTimer.Start();
 
             // =============================================
             //  中间主区域：左右分割（数据 | 曲线+故障）
@@ -637,6 +672,36 @@ namespace W_TB_jiankong
             dgvData.Columns[3].Width = 60;
             dgvData.Columns[4].Width = 48;
             dgvData.Columns[5].Width = 52;
+
+            // 地址和属性属于诊断信息，默认隐藏以扩大左侧当前值区域；可按需展开。
+            dgvData.Columns["Address"].Visible = false;
+            dgvData.Columns["Access"].Visible = false;
+            bool registerDetailsVisible = false;
+            var btnToggleRegisterDetails = new Button
+            {
+                Text = "显示地址/属性",
+                Location = new Point(925, 16),
+                Width = 125,
+                Height = 28,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Microsoft YaHei", 9),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left
+            };
+            // 使用与左侧寄存器表接近的细灰色实线边框。
+            btnToggleRegisterDetails.FlatAppearance.BorderSize = 1;
+            btnToggleRegisterDetails.FlatAppearance.BorderColor = Color.Silver;
+            btnToggleRegisterDetails.FlatAppearance.MouseOverBackColor = Color.Transparent;
+            btnToggleRegisterDetails.FlatAppearance.MouseDownBackColor = Color.Transparent;
+            btnToggleRegisterDetails.Click += (s, e) =>
+            {
+                registerDetailsVisible = !registerDetailsVisible;
+                dgvData.Columns["Address"].Visible = registerDetailsVisible;
+                dgvData.Columns["Access"].Visible = registerDetailsVisible;
+                btnToggleRegisterDetails.Text = registerDetailsVisible ? "隐藏地址/属性" : "显示地址/属性";
+                splitMain.SplitterDistance = registerDetailsVisible ? LeftPanelTargetWidth : LeftPanelCompactWidth;
+            };
+            _toolTip.SetToolTip(btnToggleRegisterDetails, "切换显示左侧表格的寄存器地址和属性列");
+            panelTop.Controls.Add(btnToggleRegisterDetails);
 
             // 折叠/展开某分组
             void ToggleGroup(int groupIdx, bool collapse)
@@ -688,7 +753,12 @@ namespace W_TB_jiankong
 
             // 故障报警列表固定完整显示，不再提供单独的收起按钮。
             grpFaultList = new GroupBox { Text = "故障报警列表", Dock = DockStyle.Fill, Padding = new Padding(2) };
-            lstFaults = new ListBox { Dock = DockStyle.Fill, Font = new Font("Microsoft YaHei", 9) };
+            lstFaults = new ListBox
+            {
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei", 9),
+                BorderStyle = BorderStyle.FixedSingle
+            };
             grpFaultList.Controls.Add(lstFaults);
 
             panelStatus.Controls.Add(grpFaultList);
@@ -704,14 +774,28 @@ namespace W_TB_jiankong
 
             // 第一页：温度、频率、功率等连续数值。
             formsPlot = new ScottPlot.WinForms.FormsPlot { Dock = DockStyle.Fill };
-            formsPlot.MouseDown += (s, e) => _followCurrentTime = false;
+            formsPlot.MouseDown += (s, e) =>
+            {
+                BeginChartInteraction();
+                BeginChartPointer(formsPlot, e.Location);
+            };
             formsPlot.MouseWheel += (s, e) =>
             {
+                BeginChartInteraction();
                 _followCurrentTime = false;
-                ScheduleChartRenderRangeUpdate(formsPlot);
+                EndChartInteraction(formsPlot);
             };
-            formsPlot.MouseUp += (s, e) => ScheduleChartRenderRangeUpdate(formsPlot);
-            formsPlot.MouseMove += FormsPlot_MouseMove;
+            formsPlot.MouseUp += (s, e) => EndChartInteraction(formsPlot);
+            formsPlot.MouseCaptureChanged += (s, e) =>
+            {
+                if (!formsPlot.Capture && Control.MouseButtons == MouseButtons.None)
+                    EndChartInteraction(formsPlot);
+            };
+            formsPlot.MouseMove += (s, e) =>
+            {
+                UpdateChartPointerDrag(formsPlot, e, () => _followCurrentTime = false);
+                FormsPlot_MouseMove(s, e);
+            };
             formsPlot.MouseLeave += (s, e) => _chartToolTip.Hide(formsPlot);
             var chart = formsPlot.Plot;
             var dtTickGen = new ScottPlot.TickGenerators.DateTimeAutomatic();
@@ -734,7 +818,7 @@ namespace W_TB_jiankong
                 HideSelection = false,
                 ShowLines = true,
                 ShowPlusMinus = true,
-                Font = new Font("Microsoft YaHei", 8.5F)
+                Font = new Font("Microsoft YaHei", 9F)
             };
             foreach (var group in NumericCurveDefinitions.GroupBy(item => item.GroupName))
             {
@@ -786,8 +870,8 @@ namespace W_TB_jiankong
                 Text = "⟲ 回到当前",
                 FlatStyle = FlatStyle.Flat,
                 Location = new Point(10, 10),
-                Size = new Size(100, 30),
-                Font = new Font("Microsoft YaHei", 8.5F),
+                Size = new Size(100, 28),
+                Font = new Font("Microsoft YaHei", 9F),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left
             };
             btnBackToNow.Click += (s, e) => BackToNow();
@@ -797,8 +881,8 @@ namespace W_TB_jiankong
                 Text = "导出LOG",
                 FlatStyle = FlatStyle.Flat,
                 Location = new Point(116, 10),
-                Size = new Size(90, 30),
-                Font = new Font("Microsoft YaHei", 8.5F),
+                Size = new Size(90, 28),
+                Font = new Font("Microsoft YaHei", 9F),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left
             };
             btnExportLog.Click += async (s, e) => await ExportCurveDataAsync(false);
@@ -808,8 +892,8 @@ namespace W_TB_jiankong
                 Text = "导出Excel",
                 FlatStyle = FlatStyle.Flat,
                 Location = new Point(212, 10),
-                Size = new Size(96, 30),
-                Font = new Font("Microsoft YaHei", 8.5F),
+                Size = new Size(96, 28),
+                Font = new Font("Microsoft YaHei", 9F),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left
             };
             btnExportExcel.Click += async (s, e) => await ExportCurveDataAsync(true);
@@ -819,11 +903,22 @@ namespace W_TB_jiankong
                 Text = "打开历史",
                 FlatStyle = FlatStyle.Flat,
                 Location = new Point(314, 10),
-                Size = new Size(96, 30),
-                Font = new Font("Microsoft YaHei", 8.5F),
+                Size = new Size(96, 28),
+                Font = new Font("Microsoft YaHei", 9F),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left
             };
             btnOpenHistory.Click += async (s, e) => await OpenCurveHistoryAsync();
+
+            btnArchiveFolder = new Button
+            {
+                Text = "存档路径",
+                FlatStyle = FlatStyle.Flat,
+                Size = new Size(90, 28),
+                Font = new Font("Microsoft YaHei", 9F),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left
+            };
+            btnArchiveFolder.Click += (s, e) => ChooseArchiveFolder();
+            _toolTip.SetToolTip(btnArchiveFolder, _archiveFolder);
 
             var numericChartContent = new Panel { Dock = DockStyle.Fill };
             numericChartContent.Controls.Add(formsPlot);
@@ -832,13 +927,14 @@ namespace W_TB_jiankong
             var curveToolbar = new FlowLayoutPanel
             {
                 Dock = DockStyle.Top,
-                Height = 42,
+                Height = 40,
                 Padding = new Padding(5),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                BackColor = Color.FromArgb(248, 248, 248)
+                BackColor = Color.FromArgb(248, 248, 248),
+                Font = new Font("Microsoft YaHei", 9F)
             };
-            foreach (Button button in new[] { btnBackToNow, btnExportLog, btnExportExcel, btnOpenHistory })
+            foreach (Button button in new[] { btnBackToNow, btnExportLog, btnExportExcel, btnOpenHistory, btnArchiveFolder })
             {
                 button.Location = Point.Empty;
                 button.Margin = new Padding(0, 0, 4, 0);
@@ -870,14 +966,28 @@ namespace W_TB_jiankong
             {
                 var page = new TabPage(pageName) { Padding = new Padding(0) };
                 plot.Dock = DockStyle.Fill;
-                plot.MouseDown += (s, e) => stopFollowing();
+                plot.MouseDown += (s, e) =>
+                {
+                    BeginChartInteraction();
+                    BeginChartPointer(plot, e.Location);
+                };
                 plot.MouseWheel += (s, e) =>
                 {
+                    BeginChartInteraction();
                     stopFollowing();
-                    ScheduleChartRenderRangeUpdate(plot);
+                    EndChartInteraction(plot);
                 };
-                plot.MouseUp += (s, e) => ScheduleChartRenderRangeUpdate(plot);
-                plot.MouseMove += BitFormsPlot_MouseMove;
+                plot.MouseUp += (s, e) => EndChartInteraction(plot);
+                plot.MouseCaptureChanged += (s, e) =>
+                {
+                    if (!plot.Capture && Control.MouseButtons == MouseButtons.None)
+                        EndChartInteraction(plot);
+                };
+                plot.MouseMove += (s, e) =>
+                {
+                    UpdateChartPointerDrag(plot, e, stopFollowing);
+                    BitFormsPlot_MouseMove(s, e);
+                };
                 plot.MouseLeave += (s, e) => _chartToolTip.Hide(plot);
 
                 var dtTickGenerator = new ScottPlot.TickGenerators.DateTimeAutomatic();
@@ -899,7 +1009,7 @@ namespace W_TB_jiankong
                     HideSelection = false,
                     ShowLines = true,
                     ShowPlusMinus = true,
-                    Font = new Font("Microsoft YaHei", 8.5F)
+                Font = new Font("Microsoft YaHei", 9F)
                 };
                 foreach (var group in definitions.GroupBy(item => new { item.Address, item.GroupName }))
                 {
@@ -950,8 +1060,8 @@ namespace W_TB_jiankong
                     Text = "⟲ 回到当前",
                     FlatStyle = FlatStyle.Flat,
                     Location = new Point(10, 10),
-                    Size = new Size(100, 30),
-                    Font = new Font("Microsoft YaHei", 8.5F),
+                    Size = new Size(100, 28),
+                    Font = new Font("Microsoft YaHei", 9F),
                     Anchor = AnchorStyles.Top | AnchorStyles.Left
                 };
                 backButton.Click += (s, e) => backToNow();
@@ -1023,10 +1133,10 @@ namespace W_TB_jiankong
             Load += (s, e) =>
             {
                 splitMain.FixedPanel = FixedPanel.Panel1;
-                splitMain.Panel1MinSize = LeftPanelTargetWidth - 2;
+                splitMain.Panel1MinSize = LeftPanelCompactWidth - 2;
                 splitMain.Panel2MinSize = 300;
                 splitMain.SplitterDistance = Math.Clamp(
-                    LeftPanelTargetWidth,
+                    LeftPanelCompactWidth,
                     splitMain.Panel1MinSize,
                     Math.Max(splitMain.Panel1MinSize,
                              splitMain.Width - splitMain.SplitterWidth - splitMain.Panel2MinSize));
@@ -1091,10 +1201,85 @@ namespace W_TB_jiankong
             catch { }
         }
 
+        private void BeginChartPointer(ScottPlot.WinForms.FormsPlot plot, Point location)
+        {
+            _chartPointerDownPlot = plot;
+            _chartPointerDownLocation = location;
+            _chartPointerDragDetected = false;
+        }
+
+        private void UpdateChartPointerDrag(
+            ScottPlot.WinForms.FormsPlot plot,
+            MouseEventArgs e,
+            Action stopFollowing)
+        {
+            if (_chartPointerDownPlot != plot
+                || _chartPointerDragDetected
+                || e.Button == MouseButtons.None)
+                return;
+
+            int dx = e.X - _chartPointerDownLocation.X;
+            int dy = e.Y - _chartPointerDownLocation.Y;
+            if (dx * dx + dy * dy < 16)
+                return;
+
+            _chartPointerDragDetected = true;
+            stopFollowing();
+        }
+
+        private void BeginChartInteraction()
+        {
+            _chartInteractionInProgress = true;
+            _chartInteractionToken++;
+        }
+
+        private void EndChartInteraction(ScottPlot.WinForms.FormsPlot plot)
+        {
+            long token = _chartInteractionToken;
+            if (!plot.IsHandleCreated || plot.IsDisposed)
+            {
+                if (token == _chartInteractionToken)
+                    _chartInteractionInProgress = false;
+                return;
+            }
+
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    // 新一轮拖动已经开始时，旧事件不得释放新锁。
+                    if (token != _chartInteractionToken || plot.IsDisposed)
+                        return;
+                    _chartInteractionInProgress = false;
+                    _chartPointerDownPlot = null;
+                    _chartPointerDragDetected = false;
+                    UpdateChartRenderRange(plot);
+                    plot.Refresh();
+                }));
+            }
+            catch (InvalidOperationException)
+            {
+                if (token == _chartInteractionToken)
+                    _chartInteractionInProgress = false;
+            }
+        }
+
         private void RefreshVisibleChart(bool force = false)
         {
             try
             {
+                if (_chartInteractionInProgress)
+                {
+                    // 某些窗口切换路径可能丢失 MouseUp；没有按键时立即解除保护，避免曲线长期不刷新。
+                    if (Control.MouseButtons == MouseButtons.None)
+                    {
+                        _chartInteractionInProgress = false;
+                        _chartPointerDownPlot = null;
+                        _chartPointerDragDetected = false;
+                    }
+                    else
+                        return;
+                }
                 long nowTick = Environment.TickCount64;
                 if (!force && nowTick - _lastChartRenderTick < ChartRenderInterval.TotalMilliseconds)
                     return;
@@ -1672,7 +1857,8 @@ namespace W_TB_jiankong
                 ShowNewFolderButton = true,
                 UseDescriptionForTitle = true
             };
-            if (dialog.ShowDialog(this) != DialogResult.OK)
+            // 启动阶段不指定隐藏的主窗体作为 owner，避免文件夹选择框出现在后台而阻塞主界面。
+            if (dialog.ShowDialog() != DialogResult.OK)
                 return;
 
             try
@@ -1780,40 +1966,53 @@ namespace W_TB_jiankong
             panelLog.Height = _logVisible ? 200 : 36;
             btnToggleLog.Text = _logVisible ? "▼ 隐藏" : "▲ 展开";
         }
+        private void FlushPendingLogLines()
+        {
+            if (IsDisposed || Disposing || rtbLog.IsDisposed)
+                return;
 
+            var lines = new List<string>(100);
+            while (lines.Count < 100 && _pendingLogLines.TryDequeue(out string? line))
+                lines.Add(line);
+            if (lines.Count == 0)
+                return;
+
+            rtbLog.AppendText(string.Concat(lines));
+            rtbLog.ScrollToCaret();
+            if (rtbLog.Lines.Length > 500)
+            {
+                int firstLineToKeep = Math.Max(0, rtbLog.Lines.Length - 300);
+                int removeLength = rtbLog.GetFirstCharIndexFromLine(firstLineToKeep);
+                if (removeLength > 0)
+                {
+                    rtbLog.Select(0, removeLength);
+                    rtbLog.SelectedText = "";
+                }
+            }
+        }
 
         private void AppendLog(string direction, byte[] data)
         {
             if (IsDisposed || Disposing)
                 return;
-            if (InvokeRequired)
-            {
-                if (IsHandleCreated)
-                {
-                    try { BeginInvoke(() => AppendLog(direction, data)); }
-                    catch (InvalidOperationException) { }
-                }
-                return;
-            }
+
             string time = DateTime.Now.ToString("HH:mm:ss.fff");
+            string line;
             if (direction is "SYS" or "ERR")
             {
                 string message = System.Text.Encoding.UTF8.GetString(data);
-                rtbLog.AppendText($"[{time}] {direction}: {message}\n");
+                line = $"[{time}] {direction}: {message}\n";
             }
             else
             {
                 string hex = BitConverter.ToString(data).Replace("-", " ");
                 string arrow = direction == "TX" ? "→" : "←";
-                rtbLog.AppendText($"[{time}] {arrow} {direction}: {hex}\n");
+                line = $"[{time}] {arrow} {direction}: {hex}\n";
             }
-            rtbLog.ScrollToCaret();
-            // 限制行数
-            if (rtbLog.Lines.Length > 500)
-            {
-                rtbLog.Select(0, rtbLog.GetFirstCharIndexFromLine(rtbLog.Lines.Length - 300));
-                rtbLog.SelectedText = "";
-            }
+
+            _pendingLogLines.Enqueue(line);
+            if (!InvokeRequired)
+                FlushPendingLogLines();
         }
 
         // ==================== 串口连接 ====================
@@ -2825,6 +3024,12 @@ namespace W_TB_jiankong
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             StopPolling();
+            if (_logFlushTimer != null)
+            {
+                _logFlushTimer.Stop();
+                _logFlushTimer.Dispose();
+                _logFlushTimer = null;
+            }
             _chartToolTip.Dispose();
             _toolTip.Dispose();
             _modbus.Dispose();

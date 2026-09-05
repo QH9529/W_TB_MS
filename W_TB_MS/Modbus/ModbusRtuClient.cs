@@ -14,6 +14,7 @@ namespace W_TB_jiankong.Modbus
     {
         private SerialPort? _serialPort;
         private readonly object _lock = new();
+        private CancellationTokenSource _operationCancellation = new();
 
         // 通信参数（协议默认）
         public int BaudRate { get; set; } = 9600;
@@ -29,6 +30,9 @@ namespace W_TB_jiankong.Modbus
 
         public bool IsConnected => _serialPort?.IsOpen ?? false;
         public event Action<string, byte[]>? FrameObserved;
+
+        /// <summary>取消当前串口读写，避免关闭或重连时等待完整超时。</summary>
+        public void CancelPendingOperations() => _operationCancellation.Cancel();
 
         /// <summary>获取可用串口列表，按 COM 序号从小到大排列</summary>
         public static string[] GetAvailablePorts() => SortPortNames(SerialPort.GetPortNames());
@@ -52,7 +56,10 @@ namespace W_TB_jiankong.Modbus
         {
             lock (_lock)
             {
+                _operationCancellation.Cancel();
                 CloseCore();
+                _operationCancellation.Dispose();
+                _operationCancellation = new CancellationTokenSource();
                 _serialPort = new SerialPort(portName, BaudRate, Parity, DataBits, StopBits)
                 {
                     ReadTimeout = ReadTimeout,
@@ -67,6 +74,7 @@ namespace W_TB_jiankong.Modbus
         /// <summary>关闭串口</summary>
         public void Close()
         {
+            _operationCancellation.Cancel();
             lock (_lock)
                 CloseCore();
         }
@@ -102,8 +110,10 @@ namespace W_TB_jiankong.Modbus
         /// <summary>写单个保持寄存器 (功能码 0x06)</summary>
         public void WriteSingleRegister(ushort address, ushort value)
         {
+            CancellationToken cancellationToken = _operationCancellation.Token;
             lock (_lock)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (_serialPort?.IsOpen != true)
                     throw new InvalidOperationException("串口未打开");
 
@@ -115,7 +125,7 @@ namespace W_TB_jiankong.Modbus
                 FrameObserved?.Invoke("TX", request);
 
                 // 读取响应
-                byte[] response = ReadResponse(0x06);
+                byte[] response = ReadResponse(0x06, cancellationToken);
                 FrameObserved?.Invoke("RX", response);
                 ValidateResponse(response, 0x06);
                 if (response[3] != (byte)(address >> 8) || response[4] != (byte)address ||
@@ -123,14 +133,16 @@ namespace W_TB_jiankong.Modbus
                 {
                     throw new InvalidDataException("写入响应回显的寄存器地址或数值不匹配");
                 }
-                Thread.Sleep(20);
+                cancellationToken.WaitHandle.WaitOne(20);
             }
         }
 
         private ushort[] ReadRegisters(byte functionCode, ushort startAddress, ushort quantity)
         {
+            CancellationToken cancellationToken = _operationCancellation.Token;
             lock (_lock)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (_serialPort?.IsOpen != true)
                     throw new InvalidOperationException("串口未打开");
 
@@ -141,7 +153,7 @@ namespace W_TB_jiankong.Modbus
                 FrameObserved?.Invoke("TX", request);
 
                 // 等待响应 (协议要求6ms~40ms)
-                byte[] response = ReadResponse(functionCode);
+                byte[] response = ReadResponse(functionCode, cancellationToken);
                 FrameObserved?.Invoke("RX", response);
                 ValidateResponse(response, functionCode);
 
@@ -158,12 +170,12 @@ namespace W_TB_jiankong.Modbus
                 {
                     result[i] = (ushort)((response[6 + i * 2] << 8) | response[7 + i * 2]);
                 }
-                Thread.Sleep(20);
+                cancellationToken.WaitHandle.WaitOne(20);
                 return result;
             }
         }
 
-        private byte[] ReadResponse(byte expectedFunctionCode)
+        private byte[] ReadResponse(byte expectedFunctionCode, CancellationToken cancellationToken)
         {
             if (_serialPort == null) throw new InvalidOperationException("串口未打开");
 
@@ -171,47 +183,49 @@ namespace W_TB_jiankong.Modbus
             while (Stopwatch.GetTimestamp() < deadline)
             {
                 // 抓包显示串口可能一次返回多帧，先同步到完整的 F1 FF 功能帧头。
-                if (!ReadByteUntil(deadline, out byte first) || first != SlaveAddress)
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!ReadByteUntil(deadline, cancellationToken, out byte first) || first != SlaveAddress)
                     continue;
-                if (!ReadByteUntil(deadline, out byte marker) || marker != 0xFF)
+                if (!ReadByteUntil(deadline, cancellationToken, out byte marker) || marker != 0xFF)
                     continue;
-                if (!ReadByteUntil(deadline, out byte function) || function != expectedFunctionCode && function != (expectedFunctionCode | 0x80))
+                if (!ReadByteUntil(deadline, cancellationToken, out byte function) || function != expectedFunctionCode && function != (expectedFunctionCode | 0x80))
                     continue;
 
                 if ((function & 0x80) != 0)
                 {
                     byte[] exception = new byte[6] { first, marker, function, 0, 0, 0 };
-                    ReadExact(exception, 3, 3, deadline);
+                    ReadExact(exception, 3, 3, deadline, cancellationToken);
                     return exception;
                 }
 
                 if (function is 0x03 or 0x04)
                 {
-                    if (!ReadByteUntil(deadline, out byte addressHigh) || !ReadByteUntil(deadline, out byte addressLow))
+                    if (!ReadByteUntil(deadline, cancellationToken, out byte addressHigh) || !ReadByteUntil(deadline, cancellationToken, out byte addressLow))
                         throw new TimeoutException("读取响应超时");
-                    if (!ReadByteUntil(deadline, out byte count) || count > 250 || (count & 1) != 0)
+                    if (!ReadByteUntil(deadline, cancellationToken, out byte count) || count > 250 || (count & 1) != 0)
                         throw new InvalidDataException("响应字节数无效");
                     byte[] response = new byte[count + 8];
                     response[0] = first; response[1] = marker; response[2] = function;
                     response[3] = addressHigh; response[4] = addressLow; response[5] = count;
-                    ReadExact(response, 6, count + 2, deadline);
+                    ReadExact(response, 6, count + 2, deadline, cancellationToken);
                     return response;
                 }
 
                 // 0x06/0x10 写响应为地址/数量回显，固定 9 字节（含 CRC）。
                 byte[] writeResponse = new byte[9] { first, marker, function, 0, 0, 0, 0, 0, 0 };
-                ReadExact(writeResponse, 3, 6, deadline);
+                ReadExact(writeResponse, 3, 6, deadline, cancellationToken);
                 return writeResponse;
             }
 
             throw new TimeoutException("读取响应超时");
         }
 
-        private bool ReadByteUntil(long deadline, out byte value)
+        private bool ReadByteUntil(long deadline, CancellationToken cancellationToken, out byte value)
         {
             value = 0;
             while (Stopwatch.GetTimestamp() < deadline)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
                     if (_serialPort?.BytesToRead > 0)
@@ -221,16 +235,17 @@ namespace W_TB_jiankong.Modbus
                     }
                 }
                 catch (TimeoutException) { }
-                Thread.Sleep(1);
+                if (cancellationToken.WaitHandle.WaitOne(1))
+                    cancellationToken.ThrowIfCancellationRequested();
             }
             return false;
         }
 
-        private void ReadExact(byte[] buffer, int offset, int count, long deadline)
+        private void ReadExact(byte[] buffer, int offset, int count, long deadline, CancellationToken cancellationToken)
         {
             for (int i = 0; i < count; i++)
             {
-                if (!ReadByteUntil(deadline, out buffer[offset + i]))
+                if (!ReadByteUntil(deadline, cancellationToken, out buffer[offset + i]))
                     throw new TimeoutException("读取响应超时");
             }
         }
@@ -328,6 +343,7 @@ namespace W_TB_jiankong.Modbus
         public void Dispose()
         {
             Close();
+            _operationCancellation.Dispose();
             GC.SuppressFinalize(this);
         }
     }
