@@ -60,6 +60,7 @@ namespace W_TB_jiankong.Models
     public static class CurveHistoryFile
     {
         public const string LogFormat = "W_TB_MS_CURVE_LOG";
+        private const int LegacyExcelDataStartRow = 8;
         private const int ExcelDataStartRow = 8;
         private const uint HeaderStyleIndex = 1;
         private const uint DateStyleIndex = 2;
@@ -181,12 +182,30 @@ namespace W_TB_jiankong.Models
             stylesPart.Stylesheet.Save();
 
             var sheets = workbookPart.Workbook.AppendChild(new Sheets());
-            WriteWorksheet(workbookPart, sheets, 1, "数值曲线", times,
-                series.Where(item => item.Kind == CurveSeriesKind.Numeric).ToList(), getValue);
-            WriteWorksheet(workbookPart, sheets, 2, "BIT状态", times,
-                series.Where(item => item.Kind == CurveSeriesKind.Bit).ToList(), getValue);
+            // Keep parameters, device/host status, and fault bits together so
+            // one exported workbook has one directly comparable time axis.
+            List<CurveHistorySeries> orderedSeries = series
+                .OrderBy(item => GetExcelPageOrder(item))
+                .ThenBy(item => item.Kind)
+                .ThenBy(item => item.Address)
+                .ThenBy(item => item.Bit ?? -1)
+                .ToList();
+            WriteWorksheet(workbookPart, sheets, 1, "曲线数据", times, orderedSeries, getValue);
             workbookPart.Workbook.Save();
         }
+
+        private static int GetExcelPageOrder(CurveHistorySeries series) =>
+            series.Kind == CurveSeriesKind.Numeric
+                ? 0
+                : series.Address is 30106 or 30201 or 30229 ? 1 : 2;
+
+        private static string GetExcelPageName(CurveHistorySeries series) =>
+            GetExcelPageOrder(series) switch
+            {
+                0 => "参数页",
+                1 => "状态页",
+                _ => "故障页"
+            };
 
         private static void WriteWorksheet(
             WorkbookPart workbookPart,
@@ -227,7 +246,7 @@ namespace W_TB_jiankong.Models
                         CurveHistorySeries item = series[index];
                         string value = rowIndex switch
                         {
-                            1 => $"[{FormatAddress(item)}] {item.Name}",
+                            1 => item.Name,
                             2 => item.Key,
                             3 => item.GroupName,
                             4 => item.Unit,
@@ -332,6 +351,7 @@ namespace W_TB_jiankong.Models
             times = new List<DateTime>();
             var metadata = new Dictionary<uint, Dictionary<int, string>>();
             Dictionary<int, CurveHistorySeries>? worksheetSeries = null;
+            int dataStartRow = LegacyExcelDataStartRow;
 
             using OpenXmlReader reader = OpenXmlReader.Create(worksheetPart);
             while (reader.Read())
@@ -342,14 +362,25 @@ namespace W_TB_jiankong.Models
                 if (reader.LoadCurrentElement() is not Row row)
                     continue;
                 uint rowIndex = row.RowIndex?.Value ?? 0;
-                if (rowIndex is >= 1 and < ExcelDataStartRow)
+                if (rowIndex == 1)
+                {
+                    Dictionary<int, string> firstRow = row.Elements<Cell>().ToDictionary(
+                        GetColumnIndex,
+                        cell => ReadCellText(cell, sharedStrings));
+                    metadata[rowIndex] = firstRow;
+                    if (firstRow.TryGetValue(1, out string? firstCell)
+                        && firstCell.Equals("页面", StringComparison.Ordinal))
+                        dataStartRow = ExcelDataStartRow;
+                    continue;
+                }
+                if (rowIndex is >= 2 && rowIndex < dataStartRow)
                 {
                     metadata[rowIndex] = row.Elements<Cell>().ToDictionary(
                         GetColumnIndex,
                         cell => ReadCellText(cell, sharedStrings));
                     continue;
                 }
-                if (rowIndex < ExcelDataStartRow)
+                if (rowIndex < dataStartRow)
                     continue;
 
                 worksheetSeries ??= CreateWorksheetSeries(metadata);
@@ -384,15 +415,26 @@ namespace W_TB_jiankong.Models
             IReadOnlyDictionary<uint, Dictionary<int, string>> metadata)
         {
             var result = new Dictionary<int, CurveHistorySeries>();
-            if (!metadata.TryGetValue(2, out Dictionary<int, string>? keys))
+            uint keyRow = 2;
+            if (metadata.TryGetValue(3, out Dictionary<int, string>? currentKeys)
+                && currentKeys.Values.Any(value => TryParseKey(value.Trim(), out _, out _, out _)))
+                keyRow = 3;
+            if (!metadata.TryGetValue(keyRow, out Dictionary<int, string>? keys))
                 return result;
+
+            uint headerRow = keyRow - 1;
+            uint groupRow = keyRow + 1;
+            uint unitRow = keyRow + 2;
+            uint axisRow = keyRow + 3;
+            uint zeroRow = keyRow + 4;
+            uint oneRow = keyRow + 5;
 
             foreach (var item in keys.Where(item => item.Key >= 2).OrderBy(item => item.Key))
             {
                 if (!TryParseKey(item.Value.Trim(), out CurveSeriesKind kind, out ushort address, out int? bit))
                     continue;
 
-                string header = GetMetadata(metadata, 1, item.Key).Trim();
+                string header = GetMetadata(metadata, headerRow, item.Key).Trim();
                 int nameStart = header.IndexOf(']');
                 result[item.Key] = new CurveHistorySeries
                 {
@@ -400,13 +442,13 @@ namespace W_TB_jiankong.Models
                     Kind = kind,
                     Address = address,
                     Bit = bit,
-                    GroupName = GetMetadata(metadata, 3, item.Key),
+                    GroupName = GetMetadata(metadata, groupRow, item.Key),
                     Name = nameStart >= 0 ? header[(nameStart + 1)..].Trim() : header,
-                    Unit = GetMetadata(metadata, 4, item.Key),
-                    UseRightAxis = GetMetadata(metadata, 5, item.Key)
+                    Unit = GetMetadata(metadata, unitRow, item.Key),
+                    UseRightAxis = GetMetadata(metadata, axisRow, item.Key)
                         .Equals("R", StringComparison.OrdinalIgnoreCase),
-                    ZeroText = GetMetadata(metadata, 6, item.Key),
-                    OneText = GetMetadata(metadata, 7, item.Key)
+                    ZeroText = GetMetadata(metadata, zeroRow, item.Key),
+                    OneText = GetMetadata(metadata, oneRow, item.Key)
                 };
             }
             return result;

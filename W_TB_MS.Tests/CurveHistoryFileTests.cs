@@ -1,4 +1,5 @@
 using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Spreadsheet;
 using DocumentFormat.OpenXml.Validation;
 using W_TB_jiankong.Models;
 using Xunit;
@@ -36,6 +37,16 @@ public class CurveHistoryFileTests
             AssertEquivalent(source, loaded);
             using SpreadsheetDocument document = SpreadsheetDocument.Open(path, false);
             Assert.Empty(new OpenXmlValidator().Validate(document));
+            IReadOnlyList<Sheet> sheets = document.WorkbookPart!.Workbook.Sheets!.Elements<Sheet>().ToList();
+            Assert.Single(sheets);
+            Assert.Equal("曲线数据", sheets[0].Name?.Value);
+            WorksheetPart worksheetPart = (WorksheetPart)document.WorkbookPart.GetPartById(sheets[0].Id!.Value!);
+            Row pageRow = worksheetPart.Worksheet.GetFirstChild<SheetData>()!.Elements<Row>().First();
+            Assert.Contains("空调进水温度", pageRow.InnerText);
+            Assert.Contains("热泵主机开关机状态", pageRow.InnerText);
+            Assert.Contains("冬季防冻保护", pageRow.InnerText);
+            Assert.DoesNotContain("参数页", pageRow.InnerText);
+            Assert.DoesNotContain("30106 BIT0", pageRow.InnerText);
         }
         finally
         {
@@ -75,6 +86,18 @@ public class CurveHistoryFileTests
                     ZeroText = "关机",
                     OneText = "开机",
                     Values = new List<double> { 0, 1 }
+                },
+                new()
+                {
+                    Key = "B:30101:0",
+                    Kind = CurveSeriesKind.Bit,
+                    Address = 30101,
+                    Bit = 0,
+                    GroupName = "故障报警一",
+                    Name = "冬季防冻保护",
+                    ZeroText = "正常",
+                    OneText = "触发",
+                    Values = new List<double> { 0, 0 }
                 }
             }
         };

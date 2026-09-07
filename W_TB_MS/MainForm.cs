@@ -34,7 +34,7 @@ namespace W_TB_jiankong
         private const double XAxisMinMarginSeconds = 1.0;     // 边距下限
         private const double MinTimeWindowSeconds = 10.0;     // 单点/跨度不足时的中心窗口宽度
         private const float CurveClickDistancePixels = 10;
-        private static readonly TimeSpan ChartRenderInterval = TimeSpan.FromMilliseconds(250);
+        private static readonly TimeSpan ChartRenderInterval = TimeSpan.FromMilliseconds(500);
         private static readonly TimeSpan ChartAutoScaleInterval = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan CurveRetention = TimeSpan.FromHours(24);
         private static readonly TimeSpan CurvePruneInterval = TimeSpan.FromMinutes(5);
@@ -69,6 +69,8 @@ namespace W_TB_jiankong
         private DateTime _nextAutomaticArchiveAt;
         private DateTime _nextAutomaticArchiveRetryAt = DateTime.MinValue;
         private long _lastChartRenderTick;
+        private bool _chartDataDirty;
+        private System.Windows.Forms.Timer? _chartRenderTimer;
         private DateTime _lastChartAutoScaleAt = DateTime.MinValue;
         // 交互期间用令牌协调鼠标事件，避免异步 MouseUp 清理新一轮操作。
         private long _chartInteractionToken;
@@ -88,7 +90,7 @@ namespace W_TB_jiankong
         internal static TimeSpan CurveRetentionDuration => CurveRetention;
         internal static TimeSpan AutomaticArchiveIntervalDuration => AutomaticArchiveInterval;
         internal static string SoftwareVersion =>
-            typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.1";
+            typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.2";
 
 
         // --- 串口配置 ---
@@ -119,14 +121,18 @@ namespace W_TB_jiankong
         private Label lblFaultCode = null!;
         private ListBox lstFaults = null!;
         private Label lblWorkMode = null!;
+        private string _lastFaultSignature = string.Empty;
+        private int _lastFaultCount = -1;
 
         // --- 通信日志 ---
         private RichTextBox rtbLog = null!;
         private Panel panelLog = null!;
         private Button btnToggleLog = null!;
+        private CheckBox chkVerboseLog = null!;
         private Button btnArchiveFolder = null!;
         private System.Windows.Forms.Timer? _logFlushTimer;
         private readonly ConcurrentQueue<string> _pendingLogLines = new();
+        private bool _verboseCommunicationLog;
 
         private bool _logVisible = true;
 
@@ -146,11 +152,20 @@ namespace W_TB_jiankong
         private const int ReconnectMaxRounds = 3;
         private static readonly (byte FunctionCode, ushort StartAddress, ushort Quantity)[] PollBlocks =
         {
+            (0x04, 30001, 12),
+            (0x04, 30101, 10),
+            (0x04, 30201, 41),
+            (0x03, 40001, 12),
+            (0x03, 40201, 39), (0x03, 40301, 24)
+        };
+
+        // 某些旧设备拒绝读取较大的连续区间时，回退到原始分块。
+        private static readonly (byte FunctionCode, ushort StartAddress, ushort Quantity)[] LegacyPollBlocks =
+        {
             (0x04, 30001, 4), (0x04, 30005, 4), (0x04, 30009, 4),
             (0x04, 30101, 6), (0x04, 30201, 26), (0x04, 30226, 3),
             (0x04, 30107, 4), (0x04, 30229, 1), (0x04, 30231, 11),
-            (0x03, 40001, 12),
-            (0x03, 40201, 39), (0x03, 40301, 24)
+            (0x03, 40001, 12), (0x03, 40201, 39), (0x03, 40301, 24)
         };
 
         private sealed record WriteRule(
@@ -494,6 +509,34 @@ namespace W_TB_jiankong
             [40324] = new(30, 70, 10)
         };
 
+        // Hold-register values with protocol-defined state meanings. Other
+        // registers remain displayed using their numeric/scaled value.
+        private static readonly Dictionary<ushort, Dictionary<ushort, string>> ParameterValueMeanings = new()
+        {
+            [40001] = new() { [0] = "关机", [1] = "开机" },
+            [40002] = new() { [0] = "普通", [1] = "静音", [2] = "超级静音" },
+            [40003] = new() { [0] = "关闭", [1] = "打开" },
+            [40006] = new() { [0] = "无请求", [1] = "请求除霜" },
+            [40007] = new() { [0] = "关闭", [1] = "运行" },
+            [40008] = new() { [0] = "关闭", [1] = "运行" },
+            [40009] = new() { [0] = "关闭", [1] = "打开" },
+            [40010] = new() { [0] = "关闭", [1] = "打开" },
+            [40011] = new() { [0] = "关闭", [1] = "强制待机" },
+            [40103] = new() { [0] = "无请求", [1] = "请求除霜" },
+            [40105] = new() { [0] = "关闭", [1] = "启用" },
+            [40201] = new() { [1] = "制冷", [2] = "制热" },
+            [40202] = new() { [0] = "禁用", [1] = "启用" },
+            [40203] = new() { [0] = "不支持", [1] = "支持" },
+            [40208] = new() { [0] = "进水温度", [1] = "出水温度" },
+            [40212] = new() { [0] = "节能", [1] = "舒适" },
+            [40223] = new() { [0] = "不交替", [1] = "交替" },
+            [40226] = new() { [0] = "禁用", [1] = "启用" },
+            [40227] = new() { [0] = "禁用", [1] = "启用" },
+            [40228] = new() { [0] = "关闭", [1] = "打开", [2] = "自动" },
+            [40229] = new() { [0] = "关闭", [1] = "打开", [2] = "自动" },
+            [40230] = new() { [0] = "关闭", [1] = "打开", [2] = "自动" }
+        };
+
         public MainForm()
         {
             _archiveFolder = ArchiveSettingsStore.LoadArchiveFolder();
@@ -609,7 +652,21 @@ namespace W_TB_jiankong
             var lblLogTitle = new Label { Text = "📋 通信日志", Location = new Point(5, 8), AutoSize = true, Font = new Font("Microsoft YaHei", 10, FontStyle.Bold) };
             btnToggleLog = new Button { Text = "▼ 隐藏", Location = new Point(panelLog.Width - 90, 4), Width = 85, Height = 28, Anchor = AnchorStyles.Top | AnchorStyles.Right, FlatStyle = FlatStyle.Flat, Font = new Font("Microsoft YaHei", 9) };
             btnToggleLog.Click += (s, e) => ToggleLog();
-            logHeader.Controls.AddRange(new Control[] { lblLogTitle, btnToggleLog });
+            chkVerboseLog = new CheckBox
+            {
+                Text = "详细帧",
+                AutoSize = true,
+                Location = new Point(105, 8),
+                Font = new Font("Microsoft YaHei", 9),
+                Checked = false
+            };
+            chkVerboseLog.CheckedChanged += (s, e) =>
+            {
+                _verboseCommunicationLog = chkVerboseLog.Checked;
+                if (!_verboseCommunicationLog)
+                    while (_pendingLogLines.TryDequeue(out _)) { }
+            };
+            logHeader.Controls.AddRange(new Control[] { lblLogTitle, chkVerboseLog, btnToggleLog });
 
             rtbLog = new RichTextBox
             {
@@ -626,6 +683,10 @@ namespace W_TB_jiankong
             _logFlushTimer = new System.Windows.Forms.Timer { Interval = 150 };
             _logFlushTimer.Tick += (s, e) => FlushPendingLogLines();
             _logFlushTimer.Start();
+
+            _chartRenderTimer = new System.Windows.Forms.Timer { Interval = (int)ChartRenderInterval.TotalMilliseconds };
+            _chartRenderTimer.Tick += (s, e) => RefreshVisibleChart();
+            _chartRenderTimer.Start();
 
             // =============================================
             //  中间主区域：左右分割（数据 | 曲线+故障）
@@ -682,15 +743,10 @@ namespace W_TB_jiankong
                 Location = new Point(925, 16),
                 Width = 125,
                 Height = 28,
-                FlatStyle = FlatStyle.Flat,
+                FlatStyle = FlatStyle.Standard,
                 Font = new Font("Microsoft YaHei", 9),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left
             };
-            // 使用与左侧寄存器表接近的细灰色实线边框。
-            btnToggleRegisterDetails.FlatAppearance.BorderSize = 1;
-            btnToggleRegisterDetails.FlatAppearance.BorderColor = Color.Silver;
-            btnToggleRegisterDetails.FlatAppearance.MouseOverBackColor = Color.Transparent;
-            btnToggleRegisterDetails.FlatAppearance.MouseDownBackColor = Color.Transparent;
             btnToggleRegisterDetails.Click += (s, e) =>
             {
                 registerDetailsVisible = !registerDetailsVisible;
@@ -750,7 +806,6 @@ namespace W_TB_jiankong
             // 右上：故障报警列表。工作状态和故障汇总已移到顶部连接信息后。
             var panelStatus = new Panel { Dock = DockStyle.Fill, Padding = new Padding(5) };
 
-            // 故障报警列表固定完整显示，不再提供单独的收起按钮。
             grpFaultList = new GroupBox { Text = "故障报警列表", Dock = DockStyle.Fill, Padding = new Padding(2) };
             lstFaults = new ListBox
             {
@@ -761,6 +816,25 @@ namespace W_TB_jiankong
             grpFaultList.Controls.Add(lstFaults);
 
             panelStatus.Controls.Add(grpFaultList);
+
+            var btnToggleFaultList = new Button
+            {
+                Text = "隐藏故障列表",
+                Location = new Point(1058, 16),
+                Width = 115,
+                Height = 28,
+                FlatStyle = FlatStyle.Standard,
+                Font = new Font("Microsoft YaHei", 9),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left
+            };
+            btnToggleFaultList.Click += (s, e) =>
+            {
+                bool showFaultList = !splitRight.Panel1Collapsed;
+                splitRight.Panel1Collapsed = showFaultList;
+                btnToggleFaultList.Text = showFaultList ? "隐藏故障列表" : "显示故障列表";
+            };
+            _toolTip.SetToolTip(btnToggleFaultList, "切换右侧故障列表显示状态");
+            panelTop.Controls.Add(btnToggleFaultList);
 
             // 右下：实时曲线分页
             chartTabs = new TabControl
@@ -801,6 +875,8 @@ namespace W_TB_jiankong
             dtTickGen.LabelFormatter = dt => dt.ToString("HH:mm:ss");
             chart.Axes.Bottom.TickGenerator = dtTickGen;
             chart.Legend.IsVisible = false;
+            // 参数页不再显示右轴曲线，隐藏右侧轴线及其数字刻度，避免空右轴占用绘图区。
+            chart.Axes.Right.IsVisible = false;
 
             foreach (NumericCurveDefinition definition in NumericCurveDefinitions)
             {
@@ -822,7 +898,7 @@ namespace W_TB_jiankong
             foreach (var group in NumericCurveDefinitions.GroupBy(item => item.GroupName))
             {
                 var groupNode = new TreeNode(group.Key);
-                foreach (NumericCurveDefinition definition in group)
+                foreach (NumericCurveDefinition definition in group.Where(item => item.Address != 30233))
                 {
                     groupNode.Nodes.Add(new TreeNode(definition.Name)
                     {
@@ -830,10 +906,30 @@ namespace W_TB_jiankong
                         Checked = definition.SelectedByDefault
                     });
                 }
-                numericSelector.Nodes.Add(groupNode);
+                if (groupNode.Nodes.Count > 0)
+                    numericSelector.Nodes.Add(groupNode);
             }
             foreach (TreeNode node in numericSelector.Nodes)
                 node.Expand();
+
+            var btnToggleCurveSelector = new Button
+            {
+                Text = "隐藏曲线选择",
+                Location = new Point(1178, 16),
+                Width = 115,
+                Height = 28,
+                FlatStyle = FlatStyle.Standard,
+                Font = new Font("Microsoft YaHei", 9),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left
+            };
+            btnToggleCurveSelector.Click += (s, e) =>
+            {
+                bool showSelector = !numericSelector.Visible;
+                numericSelector.Visible = showSelector;
+                btnToggleCurveSelector.Text = showSelector ? "隐藏曲线选择" : "显示曲线选择";
+            };
+            _toolTip.SetToolTip(btnToggleCurveSelector, "切换参数页右侧曲线选择区域");
+            panelTop.Controls.Add(btnToggleCurveSelector);
 
             bool updatingNumericChecks = false;
             numericSelector.AfterCheck += (s, e) =>
@@ -1262,6 +1358,8 @@ namespace W_TB_jiankong
         {
             try
             {
+                if (!force && !_chartDataDirty)
+                    return;
                 long nowTick = Environment.TickCount64;
                 if (!force && nowTick - _lastChartRenderTick < ChartRenderInterval.TotalMilliseconds)
                     return;
@@ -1308,6 +1406,7 @@ namespace W_TB_jiankong
                         }
                         break;
                 }
+                _chartDataDirty = false;
             }
             catch { }
         }
@@ -1492,12 +1591,12 @@ namespace W_TB_jiankong
             AddReg(30212, "热水进水温度", "℃");
             AddReg(30213, "热水出水温度", "℃");
             AddReg(30214, "热水温度", "℃");
-            AddReg(30215, "低压压力", "bar");
-            AddReg(30216, "高压压力", "bar");
-            AddReg(30217, "累计耗电量", "kWh");
             AddReg(30226, "热水上温度", "℃");
             AddReg(30227, "热水中温度", "℃");
             AddReg(30228, "热水下温度", "℃");
+            AddReg(30215, "低压压力", "bar");
+            AddReg(30216, "高压压力", "bar");
+            AddReg(30217, "累计耗电量", "kWh");
 
             AddGroup("【电气数据】");
             AddReg(30231, "AC电压", "V");
@@ -1829,8 +1928,16 @@ namespace W_TB_jiankong
             return true;
         }
 
-        private static string FormatParameterValue(ushort address, ushort rawValue)
+        internal static string FormatParameterValue(ushort address, ushort rawValue)
         {
+            if (ParameterValueMeanings.TryGetValue(address, out Dictionary<ushort, string>? meanings))
+            {
+                string meaning = meanings.TryGetValue(rawValue, out string? mapped)
+                    ? mapped
+                    : $"未知({rawValue})";
+                return $"0x{rawValue:X4} / {meaning}";
+            }
+
             if (!WriteRules.TryGetValue(address, out WriteRule? rule))
                 return rawValue.ToString(CultureInfo.CurrentCulture);
             if (rule.AllowFFFF && rawValue == ushort.MaxValue)
@@ -1992,6 +2099,11 @@ namespace W_TB_jiankong
             if (IsDisposed || Disposing)
                 return;
 
+            // TX/RX 帧数量很大，默认只保留系统消息和错误；需要抓包时勾选“详细帧”。
+            if (direction is not ("SYS" or "ERR")
+                && (!_verboseCommunicationLog || !_logVisible))
+                return;
+
             string time = DateTime.Now.ToString("HH:mm:ss.fff");
             string line;
             if (direction is "SYS" or "ERR")
@@ -2103,6 +2215,9 @@ namespace W_TB_jiankong
             _nextAutomaticArchiveAt = _automaticArchiveSegmentStart + AutomaticArchiveInterval;
             _nextAutomaticArchiveRetryAt = DateTime.MinValue;
             _lastSavedSampleTime = double.NegativeInfinity;
+            _lastFaultSignature = string.Empty;
+            _lastFaultCount = -1;
+            _chartDataDirty = true;
             _pollTimer = new System.Windows.Forms.Timer { Interval = (int)nudInterval.Value };
             _pollTimer.Tick += async (s, e) => await PollDataAsync(generation);
             _pollTimer.Start();
@@ -2160,7 +2275,7 @@ namespace W_TB_jiankong
                     return;
                 UpdateDisplay(values);
 
-                lblUpdateTime.Text = $"更新: {DateTime.Now:HH:mm:ss.fff}";
+                SetLabelText(lblUpdateTime, $"更新: {DateTime.Now:HH:mm:ss.fff}");
                 _failCount = 0;
                 _reconnectRound = 0;
             }
@@ -2219,10 +2334,29 @@ namespace W_TB_jiankong
 
         private Dictionary<ushort, ushort> ReadPollRegisters(int generation)
         {
-            var values = new Dictionary<ushort, ushort>();
-            int essentialBlocksRead = 0;
+            Dictionary<ushort, ushort> values = ReadPollBlockSet(
+                PollBlocks, generation, out int essentialBlocksRead, out bool mergedReadFailed);
+            if (!mergedReadFailed && essentialBlocksRead > 0)
+                return values;
 
-            foreach (var block in PollBlocks)
+            // 设备不支持合并读取时回退，保证老型号仍可使用。
+            AppendLog("SYS", System.Text.Encoding.UTF8.GetBytes("连续寄存器读取失败，回退到兼容分块模式"));
+            values = ReadPollBlockSet(LegacyPollBlocks, generation, out essentialBlocksRead, out _);
+            if (essentialBlocksRead == 0)
+                throw new TimeoutException("核心状态寄存器均未响应");
+            return values;
+        }
+
+        private Dictionary<ushort, ushort> ReadPollBlockSet(
+            IReadOnlyList<(byte FunctionCode, ushort StartAddress, ushort Quantity)> blocks,
+            int generation,
+            out int essentialBlocksRead,
+            out bool hadFailure)
+        {
+            var values = new Dictionary<ushort, ushort>();
+            essentialBlocksRead = 0;
+            hadFailure = false;
+            foreach (var block in blocks)
             {
                 if (generation != Volatile.Read(ref _pollGeneration))
                     throw new OperationCanceledException();
@@ -2231,23 +2365,18 @@ namespace W_TB_jiankong
                     ushort[] blockValues = block.FunctionCode == 0x04
                         ? _modbus.ReadInputRegisters(block.StartAddress, block.Quantity)
                         : _modbus.ReadHoldingRegisters(block.StartAddress, block.Quantity);
-
                     for (int i = 0; i < blockValues.Length; i++)
                         values[(ushort)(block.StartAddress + i)] = blockValues[i];
-
                     if (block.StartAddress is 30101 or 30201 or 30231)
                         essentialBlocksRead++;
                 }
                 catch (Exception ex)
                 {
+                    hadFailure = true;
                     AppendLog("ERR", System.Text.Encoding.UTF8.GetBytes(
                         $"读取 {block.StartAddress}/{block.Quantity} 失败: {ex.Message}"));
                 }
             }
-
-            if (essentialBlocksRead == 0)
-                throw new TimeoutException("核心状态寄存器均未响应");
-
             return values;
         }
 
@@ -2321,38 +2450,51 @@ namespace W_TB_jiankong
                 string defrostText = Has(30201)
                     ? (defrostRequested || defrostRunning ? "是" : "否")
                     : "数据缺失";
-                lblWorkMode.Text = $"工作状态: 电源 {(isOn ? "开机" : "关机")} | 模式 {WorkModeMapGet(workMode)} | 静音 {silentText} | 除霜 {defrostText}";
+                SetLabelText(lblWorkMode, $"工作状态: 电源 {(isOn ? "开机" : "关机")} | 模式 {WorkModeMapGet(workMode)} | 静音 {silentText} | 除霜 {defrostText}");
             }
             else
             {
-                lblWorkMode.Text = "工作状态: 数据不完整";
+                SetLabelText(lblWorkMode, "工作状态: 数据不完整");
             }
 
             int faultCount = -1;
             if (hasCompleteFaultData)
             {
-                lstFaults.Items.Clear();
-                CheckFaultBits(faultRegs[0], RegisterMap.FaultReg1Bits, "30101", 1);
-                CheckFaultBits(faultRegs[1], RegisterMap.FaultReg2Bits, "30102", 17);
-                CheckFaultBits(faultRegs[2], RegisterMap.FaultReg3Bits, "30103", 33);
-                CheckFaultBits(faultRegs[3], RegisterMap.FaultReg4Bits, "30104", 49);
-                CheckFaultBits(faultRegs[4], RegisterMap.FaultReg5Bits, "30105", 65);
-                faultCount = lstFaults.Items.Count;
-                if (faultCount == 0)
-                { lblFaultCode.Text = "故障汇总: 无故障"; lblFaultCode.ForeColor = Color.Green; }
-                else
-                { lblFaultCode.Text = $"故障汇总: {faultCount} 项"; lblFaultCode.ForeColor = Color.Red; }
+                string faultSignature = string.Join(",", faultRegs);
+                if (!string.Equals(faultSignature, _lastFaultSignature, StringComparison.Ordinal))
+                {
+                    lstFaults.BeginUpdate();
+                    try
+                    {
+                        lstFaults.Items.Clear();
+                        CheckFaultBits(faultRegs[0], RegisterMap.FaultReg1Bits, "30101", 1);
+                        CheckFaultBits(faultRegs[1], RegisterMap.FaultReg2Bits, "30102", 17);
+                        CheckFaultBits(faultRegs[2], RegisterMap.FaultReg3Bits, "30103", 33);
+                        CheckFaultBits(faultRegs[3], RegisterMap.FaultReg4Bits, "30104", 49);
+                        CheckFaultBits(faultRegs[4], RegisterMap.FaultReg5Bits, "30105", 65);
+                    }
+                    finally
+                    {
+                        lstFaults.EndUpdate();
+                    }
+                    _lastFaultSignature = faultSignature;
+                    _lastFaultCount = lstFaults.Items.Count;
+                }
+                faultCount = _lastFaultCount;
+                SetLabelText(lblFaultCode, faultCount == 0 ? "故障汇总: 无故障" : $"故障汇总: {faultCount} 项",
+                    faultCount == 0 ? Color.Green : Color.Red);
             }
             else
             {
-                lblFaultCode.Text = "故障汇总: 数据不完整";
-                lblFaultCode.ForeColor = Color.Orange;
+                _lastFaultSignature = string.Empty;
+                _lastFaultCount = -1;
+                SetLabelText(lblFaultCode, "故障汇总: 数据不完整", Color.Orange);
             }
 
             if (faultCount > 0)
-            { lblStatus.Text = "⚠ 检测到故障报警！"; lblStatus.ForeColor = Color.Red; }
+            { SetLabelText(lblStatus, "⚠ 检测到故障报警！", Color.Red); }
             else if (_isPolling)
-            { lblStatus.Text = $"已连接: {cmbPort.SelectedItem} @ {_modbus.BaudRate}bps"; lblStatus.ForeColor = Color.Green; }
+            { SetLabelText(lblStatus, $"已连接: {cmbPort.SelectedItem} @ {_modbus.BaudRate}bps", Color.Green); }
 
             // 曲线
             DateTime sampleTime = DateTime.Now;
@@ -2369,7 +2511,7 @@ namespace W_TB_jiankong
             PruneExpiredCurveData(sampleTime);
             if (_activeAutomaticArchiveTask == null || _activeAutomaticArchiveTask.IsCompleted)
                 _activeAutomaticArchiveTask = TryAutomaticArchiveAsync(sampleTime);
-            RefreshVisibleChart();
+            _chartDataDirty = true;
         }
 
         private void PruneExpiredCurveData(DateTime now)
@@ -2412,9 +2554,50 @@ namespace W_TB_jiankong
             var (xMin, xMax) = ComputeXAxisLimits();
             UpdateChartRenderRange(formsPlot, xMin, xMax);
             formsPlot.Plot.Axes.AutoScale();
+            NormalizePowerAxisWhenZero();
             if (xMax > xMin)
                 formsPlot.Plot.Axes.SetLimitsX(xMin, xMax);
             formsPlot.Refresh();
+        }
+
+        private void NormalizePowerAxisWhenZero()
+        {
+            if (!_numericCurveData.TryGetValue(30233, out List<double>? powerData)
+                || powerData.Count == 0)
+                return;
+
+            double minimum = double.PositiveInfinity;
+            double maximum = double.NegativeInfinity;
+            foreach (double value in powerData)
+            {
+                if (!double.IsFinite(value))
+                    continue;
+                minimum = Math.Min(minimum, value);
+                maximum = Math.Max(maximum, value);
+            }
+
+            if (!double.IsFinite(minimum) || !double.IsFinite(maximum))
+                return;
+
+            // ScottPlot 对全 0 数据的自动范围会产生约 -40 的视觉下限，
+            // 这里给功率右轴一个稳定范围，并让两个 Y 轴的 0 像素位置对齐。
+            if (Math.Abs(maximum - minimum) < 1e-9)
+            {
+                double upper = Math.Max(1.0, Math.Abs(maximum) * 1.1);
+                ScottPlot.AxisLimits primaryLimits = formsPlot.Plot.Axes.GetLimits();
+                double primarySpan = primaryLimits.Bottom - primaryLimits.Top;
+                double primaryZeroFraction = primarySpan > 0
+                    ? (0 - primaryLimits.Top) / primarySpan
+                    : 0;
+                primaryZeroFraction = Math.Clamp(primaryZeroFraction, 0.0, 0.95);
+
+                // 右轴上边界固定为一个小的正数，反推下边界，
+                // 使右轴 0 与左轴 0 处于同一条水平线上。
+                double lower = primaryZeroFraction >= 0.999
+                    ? -upper
+                    : -upper * primaryZeroFraction / Math.Max(0.05, 1.0 - primaryZeroFraction);
+                formsPlot.Plot.Axes.SetLimitsY(lower, upper, formsPlot.Plot.Axes.Right);
+            }
         }
 
         private void BackToNow()
@@ -2943,19 +3126,30 @@ namespace W_TB_jiankong
 
         // ==================== 辅助 ====================
 
+        private static void SetLabelText(Label label, string text, Color? foreColor = null)
+        {
+            if (!string.Equals(label.Text, text, StringComparison.Ordinal))
+                label.Text = text;
+            if (foreColor.HasValue && label.ForeColor != foreColor.Value)
+                label.ForeColor = foreColor.Value;
+        }
+
         private void SetRegisterDisplayValue(ushort address, string value)
         {
             if (!_rowMap.TryGetValue(address, out int rowIndex) || rowIndex >= dgvData.Rows.Count)
                 return;
 
             DataGridViewRow row = dgvData.Rows[rowIndex];
-            row.Cells["Value"].Value = value;
+            DataGridViewCell valueCell = row.Cells["Value"];
+            if (!string.Equals(valueCell.Value?.ToString(), value, StringComparison.Ordinal))
+                valueCell.Value = value;
             // 仅温度字段执行超限高亮，避免电压和功率等正常值被误判。
             bool isTemperature = row.Cells["Unit"].Value?.ToString() == "℃";
-            if (isTemperature && double.TryParse(value, out double numericValue) && numericValue > 80)
-                row.DefaultCellStyle.ForeColor = Color.Red;
-            else
-                row.DefaultCellStyle.ForeColor = Color.Black;
+            Color color = isTemperature && double.TryParse(value, out double numericValue) && numericValue > 80
+                ? Color.Red
+                : Color.Black;
+            if (row.DefaultCellStyle.ForeColor != color)
+                row.DefaultCellStyle.ForeColor = color;
         }
 
         private void UpdateFaultBitRows(ushort address, ushort rawValue, Dictionary<int, string> definitions)
@@ -2967,8 +3161,12 @@ namespace W_TB_jiankong
 
                 bool active = (rawValue & (1 << definition.Key)) != 0;
                 DataGridViewRow row = dgvData.Rows[rowIndex];
-                row.Cells["Value"].Value = active ? "1 / 触发" : "0 / 正常";
-                row.DefaultCellStyle.ForeColor = active ? Color.Red : Color.Black;
+                string value = active ? "1 / 触发" : "0 / 正常";
+                if (!string.Equals(row.Cells["Value"].Value?.ToString(), value, StringComparison.Ordinal))
+                    row.Cells["Value"].Value = value;
+                Color color = active ? Color.Red : Color.Black;
+                if (row.DefaultCellStyle.ForeColor != color)
+                    row.DefaultCellStyle.ForeColor = color;
             }
         }
 
@@ -2982,8 +3180,11 @@ namespace W_TB_jiankong
                 bool enabled = (rawValue & (1 << definition.Key)) != 0;
                 string state = enabled ? definition.Value.OneText : definition.Value.ZeroText;
                 DataGridViewRow row = dgvData.Rows[rowIndex];
-                row.Cells["Value"].Value = $"{(enabled ? 1 : 0)} / {state}";
-                row.DefaultCellStyle.ForeColor = Color.Black;
+                string value = $"{(enabled ? 1 : 0)} / {state}";
+                if (!string.Equals(row.Cells["Value"].Value?.ToString(), value, StringComparison.Ordinal))
+                    row.Cells["Value"].Value = value;
+                if (row.DefaultCellStyle.ForeColor != Color.Black)
+                    row.DefaultCellStyle.ForeColor = Color.Black;
             }
         }
 
@@ -3046,6 +3247,12 @@ namespace W_TB_jiankong
                 _logFlushTimer.Stop();
                 _logFlushTimer.Dispose();
                 _logFlushTimer = null;
+            }
+            if (_chartRenderTimer != null)
+            {
+                _chartRenderTimer.Stop();
+                _chartRenderTimer.Dispose();
+                _chartRenderTimer = null;
             }
             _chartToolTip.Dispose();
             _toolTip.Dispose();

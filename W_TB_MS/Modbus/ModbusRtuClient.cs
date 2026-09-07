@@ -23,6 +23,8 @@ namespace W_TB_jiankong.Modbus
         public Parity Parity { get; set; } = Parity.None;
         public int ReadTimeout { get; set; } = 500;
         public int WriteTimeout { get; set; } = 500;
+        // 协议要求帧间至少约 6ms；较大的固定延时会在多块轮询时累积成明显卡顿。
+        public int InterFrameDelayMilliseconds { get; set; } = 6;
 
         // 设备地址
         public byte MasterAddress { get; set; } = 0x51;  // MixPad主机地址
@@ -133,7 +135,7 @@ namespace W_TB_jiankong.Modbus
                 {
                     throw new InvalidDataException("写入响应回显的寄存器地址或数值不匹配");
                 }
-                cancellationToken.WaitHandle.WaitOne(20);
+                cancellationToken.WaitHandle.WaitOne(InterFrameDelayMilliseconds);
             }
         }
 
@@ -170,7 +172,7 @@ namespace W_TB_jiankong.Modbus
                 {
                     result[i] = (ushort)((response[6 + i * 2] << 8) | response[7 + i * 2]);
                 }
-                cancellationToken.WaitHandle.WaitOne(20);
+                cancellationToken.WaitHandle.WaitOne(InterFrameDelayMilliseconds);
                 return result;
             }
         }

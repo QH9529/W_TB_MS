@@ -94,6 +94,25 @@ public class ChartHoverTests
         Assert.Equal("-- min -- s", MainForm.FormatDurationSeconds(double.NaN));
     }
 
+    [Theory]
+    [InlineData(40001, 0x0001, "0x0001 / 开机")]
+    [InlineData(40002, 0x0002, "0x0002 / 超级静音")]
+    [InlineData(40201, 0x0002, "0x0002 / 制热")]
+    [InlineData(40228, 0x0002, "0x0002 / 自动")]
+    public void FormatParameterValue_IncludesDefinedStateMeaning(
+        ushort address,
+        ushort rawValue,
+        string expected)
+    {
+        Assert.Equal(expected, MainForm.FormatParameterValue(address, rawValue));
+    }
+
+    [Fact]
+    public void FormatParameterValue_LeavesNumericParametersScaled()
+    {
+        Assert.Equal("23.5", MainForm.FormatParameterValue(40204, 235));
+    }
+
     [Fact]
     public void CanRecordCurveSample_RequiresEveryCurrentRegister()
     {
