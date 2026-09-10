@@ -90,7 +90,7 @@ namespace W_TB_jiankong
         internal static TimeSpan CurveRetentionDuration => CurveRetention;
         internal static TimeSpan AutomaticArchiveIntervalDuration => AutomaticArchiveInterval;
         internal static string SoftwareVersion =>
-            typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.2";
+            typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.4";
 
 
         // --- 串口配置 ---
@@ -144,17 +144,19 @@ namespace W_TB_jiankong
 
         // --- Modbus 自动重连 ---
         private int _failCount = 0;
-        private int _reconnectRound = 0;
         private int _pollInProgress;
         private int _pollGeneration;
         private string? _lastPortName = null;
         private const int ReconnectThreshold = 3;
-        private const int ReconnectMaxRounds = 3;
+        private const int ReconnectBaseDelayMs = 1000;   // 重连退避基数：1s 起步
+        private const int ReconnectMaxDelayMs = 30000;   // 退避封顶：30s
+        private int _reconnectActive;                    // 1 = 后台持续重连进行中
+        private CancellationTokenSource? _reconnectCts;
         private static readonly (byte FunctionCode, ushort StartAddress, ushort Quantity)[] PollBlocks =
         {
             (0x04, 30001, 12),
             (0x04, 30101, 10),
-            (0x04, 30201, 41),
+            (0x04, 30201, 42),
             (0x03, 40001, 12),
             (0x03, 40201, 39), (0x03, 40301, 24)
         };
@@ -164,7 +166,7 @@ namespace W_TB_jiankong
         {
             (0x04, 30001, 4), (0x04, 30005, 4), (0x04, 30009, 4),
             (0x04, 30101, 6), (0x04, 30201, 26), (0x04, 30226, 3),
-            (0x04, 30107, 4), (0x04, 30229, 1), (0x04, 30231, 11),
+            (0x04, 30107, 4), (0x04, 30229, 1), (0x04, 30231, 12),
             (0x03, 40001, 12), (0x03, 40201, 39), (0x03, 40301, 24)
         };
 
@@ -351,6 +353,7 @@ namespace W_TB_jiankong
             new(30226, "温度", "热水上温度", "℃", NumericCurveValueKind.SignedTenths),
             new(30227, "温度", "热水中温度", "℃", NumericCurveValueKind.SignedTenths),
             new(30228, "温度", "热水下温度", "℃", NumericCurveValueKind.SignedTenths),
+            new(30242, "温度", "压缩机IPM模块温度", "℃", NumericCurveValueKind.SignedTenths),
 
             new(30215, "压力", "低压传感器压力", "bar", NumericCurveValueKind.UnsignedTenths),
             new(30216, "压力", "高压传感器压力", "bar", NumericCurveValueKind.UnsignedTenths),
@@ -1594,6 +1597,7 @@ namespace W_TB_jiankong
             AddReg(30226, "热水上温度", "℃");
             AddReg(30227, "热水中温度", "℃");
             AddReg(30228, "热水下温度", "℃");
+            AddReg(30242, "压缩机IPM模块温度", "℃");
             AddReg(30215, "低压压力", "bar");
             AddReg(30216, "高压压力", "bar");
             AddReg(30217, "累计耗电量", "kWh");
@@ -2139,8 +2143,8 @@ namespace W_TB_jiankong
             if (_isPolling)
             {
                 StopPolling();
+                StopBackgroundReconnect();
                 _failCount = 0;
-                _reconnectRound = 0;
                 _modbus.Close();
                 btnConnect.Text = "连接";
                 lblStatus.Text = "已断开";
@@ -2233,16 +2237,116 @@ namespace W_TB_jiankong
             _pollTimer = null;
         }
 
-        private bool TryReconnect()
+        /// <summary>计算第 attempt 次重连前的等待时间：1s、2s、4s… 封顶 30s。</summary>
+        internal static int ComputeReconnectDelayMs(int attempt)
         {
-            if (!_isPolling || string.IsNullOrEmpty(_lastPortName))
+            if (attempt <= 0)
+                return ReconnectBaseDelayMs;
+            double delay = ReconnectBaseDelayMs * Math.Pow(2, attempt - 1);
+            return (int)Math.Min(delay, ReconnectMaxDelayMs);
+        }
+
+        private void StartBackgroundReconnect(int generation)
+        {
+            if (Interlocked.Exchange(ref _reconnectActive, 1) != 0)
+                return; // 已有重连在跑
+
+            CancellationTokenSource cts = new();
+            _reconnectCts = cts;
+            CancellationToken token = cts.Token;
+            int attempt = 0;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!token.IsCancellationRequested
+                        && _isPolling
+                        && generation == Volatile.Read(ref _pollGeneration))
+                    {
+                        int delayMs = ComputeReconnectDelayMs(attempt++);
+                        string waitText = delayMs >= 1000
+                            ? $"{delayMs / 1000.0:0.#} 秒后重试"
+                            : $"{delayMs} 毫秒后重试";
+                        UpdateReconnectStatus($"重连中... (第 {attempt} 次, {waitText})");
+                        try { await Task.Delay(delayMs, token); }
+                        catch (OperationCanceledException) { return; }
+
+                        bool reconnected = false;
+                        try
+                        {
+                            reconnected = await Task.Run(() => TryReconnect(token), token);
+                        }
+                        catch (OperationCanceledException) { return; }
+
+                        if (!reconnected) continue;
+
+                        // 成功：恢复轮询与 UI
+                        if (InvokeRequired)
+                        {
+                            if (IsDisposed || Disposing) return;
+                            await Task.Run(() => Invoke(() => OnReconnectSucceeded(generation)));
+                        }
+                        else
+                        {
+                            OnReconnectSucceeded(generation);
+                        }
+                        return;
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _reconnectActive, 0);
+                    cts.Dispose();
+                }
+            }, CancellationToken.None);
+        }
+
+        private void OnReconnectSucceeded(int generation)
+        {
+            if (generation != Volatile.Read(ref _pollGeneration))
+            {
+                // 重连期间用户已手动断开，保持断开状态
+                _modbus.Close();
+                return;
+            }
+            UpdateReconnectStatus($"已连接: {_lastPortName} @ {_modbus.BaudRate}bps (重连恢复)");
+            lblStatus.ForeColor = Color.Green;
+            lblConnIndicator.Text = "连接成功";
+            lblConnIndicator.ForeColor = Color.Green;
+            if (_isPolling && _pollTimer != null) _pollTimer.Start();
+        }
+
+        private void StopBackgroundReconnect()
+        {
+            Interlocked.Exchange(ref _reconnectActive, 0);
+            CancellationTokenSource? cts = Interlocked.Exchange(ref _reconnectCts, null);
+            if (cts == null) return;
+            try { cts.Cancel(); }
+            catch (ObjectDisposedException) { } // 后台任务已自行释放
+        }
+
+        private bool TryReconnect(CancellationToken token)
+        {
+            if (string.IsNullOrEmpty(_lastPortName))
                 return false;
             try
             {
+                // 串口已消失（USB 拔出）时等待重新枚举，避免对不存在的口反复 Open
+                if (!ModbusRtuClient.GetAvailablePorts().Contains(_lastPortName, StringComparer.OrdinalIgnoreCase))
+                {
+                    AppendLog("SYS", System.Text.Encoding.UTF8.GetBytes($"串口 {_lastPortName} 不存在，等待重新接入..."));
+                    return false;
+                }
+                token.ThrowIfCancellationRequested();
                 _modbus.Close();
                 _modbus.Open(_lastPortName);
                 _modbus.ReadInputRegisters(30101, 6);
                 return true;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -2277,7 +2381,6 @@ namespace W_TB_jiankong
 
                 SetLabelText(lblUpdateTime, $"更新: {DateTime.Now:HH:mm:ss.fff}");
                 _failCount = 0;
-                _reconnectRound = 0;
             }
             catch (OperationCanceledException) when (generation != Volatile.Read(ref _pollGeneration))
             {
@@ -2290,30 +2393,8 @@ namespace W_TB_jiankong
                 {
                     _failCount = 0;
                     _pollTimer?.Stop();
-                    _reconnectRound++;
-                    UpdateReconnectStatus($"重连中... (第 {_reconnectRound}/{ReconnectMaxRounds} 轮)");
-                    if (TryReconnect())
-                    {
-                        _reconnectRound = 0;
-                        UpdateReconnectStatus($"已连接: {_lastPortName} @ {_modbus.BaudRate}bps (重连恢复)");
-                        lblStatus.ForeColor = Color.Green;
-                        if (_isPolling && _pollTimer != null) _pollTimer.Start();
-                    }
-                    else if (_reconnectRound >= ReconnectMaxRounds)
-                    {
-                        StopPolling();
-                        _modbus.Close();
-                        btnConnect.Text = "连接";
-                        lblStatus.Text = "已断开 (重连失败)";
-                        lblStatus.ForeColor = Color.Red;
-                        lblConnIndicator.Text = "重连失败";
-                        lblConnIndicator.ForeColor = Color.Red;
-                        cmbSlaveAddr.Enabled = true;
-                    }
-                    else
-                    {
-                        if (_isPolling && _pollTimer != null) _pollTimer.Start();
-                    }
+                    UpdateReconnectStatus($"连接异常，进入自动重连 ({(ex is TimeoutException ? "通信超时" : ex.Message)})");
+                    StartBackgroundReconnect(generation);
                 }
                 else
                 {
@@ -2324,8 +2405,10 @@ namespace W_TB_jiankong
             finally
             {
                 Volatile.Write(ref _pollInProgress, 0);
+                // 后台重连进行中时不重启计时器，恢复连接后由重连循环统一拉起
                 if (_isPolling
                     && generation == Volatile.Read(ref _pollGeneration)
+                    && Volatile.Read(ref _reconnectActive) == 0
                     && !_writeInProgress
                     && _pollTimer != null)
                     _pollTimer.Start();
@@ -3242,6 +3325,7 @@ namespace W_TB_jiankong
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             StopPolling();
+            StopBackgroundReconnect();
             if (_logFlushTimer != null)
             {
                 _logFlushTimer.Stop();

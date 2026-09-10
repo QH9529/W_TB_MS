@@ -46,7 +46,7 @@ dotnet test W_TB_MS.Tests/W_TB_jiankong.Tests.csproj -c Release --no-build
 安装版本包：
 
 ```powershell
-./scripts/Install-Version.ps1 -PackagePath ./artifacts/W_TB_MS-v1.0.2-win-x64.zip -Start
+./scripts/Install-Version.ps1 -PackagePath ./artifacts/W_TB_MS-v1.0.4-win-x64.zip -Start
 ```
 
 查看本地可回档版本：

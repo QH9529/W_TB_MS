@@ -103,16 +103,17 @@ public class RegisterMapTests
     }
 
     [Fact]
-    public void NumericCurveDefinitions_CoverAll38ProtocolValues()
+    public void NumericCurveDefinitions_CoverAll39ProtocolValues()
     {
         IReadOnlyList<ushort> addresses = W_TB_jiankong.MainForm.NumericCurveAddresses;
 
-        Assert.Equal(38, addresses.Count);
+        Assert.Equal(39, addresses.Count);
         Assert.Equal(addresses.Count, addresses.Distinct().Count());
         Assert.Contains((ushort)30108, addresses);
         Assert.Contains((ushort)30217, addresses);
         Assert.Contains((ushort)30235, addresses);
         Assert.Contains((ushort)30241, addresses);
+        Assert.Contains((ushort)30242, addresses);
     }
 
     [Fact]

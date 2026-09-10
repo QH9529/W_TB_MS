@@ -80,6 +80,7 @@ namespace W_TB_jiankong.Models
         public const ushort DC_VOLTAGE_ADDR = 30239;
         public const ushort COMPRESSOR_CURRENT_ADDR = 30240;
         public const ushort DC_FAN_CURRENT_ADDR = 30241;
+        public const ushort COMPRESSOR_IPM_TEMP_ADDR = 30242;
         #endregion
 
         #region --- 本地故障记录段 30301~30399 ---

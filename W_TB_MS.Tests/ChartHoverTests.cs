@@ -51,6 +51,7 @@ public class ChartHoverTests
     [InlineData(30215, 456, 45.6)]
     [InlineData(30232, 87, 8.7)]
     [InlineData(30233, 9500, 9500)]
+    [InlineData(30242, 253, 25.3)]
     [InlineData(30237, 10000, 10000)]
     public void DecodeNumericCurveValue_MatchesDisplayedDecimalValue(
         ushort address,
