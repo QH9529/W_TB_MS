@@ -1,4 +1,4 @@
-namespace W_TB_jiankong.Models
+namespace W_TB_MS.Models
 {
     internal sealed record CurveArchivePair(string LogPath, string ExcelPath);
 

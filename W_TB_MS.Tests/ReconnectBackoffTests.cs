@@ -1,7 +1,7 @@
-using W_TB_jiankong;
+using W_TB_MS;
 using Xunit;
 
-namespace W_TB_jiankong.Tests;
+namespace W_TB_MS.Tests;
 
 public class ReconnectBackoffTests
 {

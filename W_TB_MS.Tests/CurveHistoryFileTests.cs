@@ -1,10 +1,10 @@
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Spreadsheet;
 using DocumentFormat.OpenXml.Validation;
-using W_TB_jiankong.Models;
+using W_TB_MS.Models;
 using Xunit;
 
-namespace W_TB_jiankong.Tests;
+namespace W_TB_MS.Tests;
 
 public class CurveHistoryFileTests
 {

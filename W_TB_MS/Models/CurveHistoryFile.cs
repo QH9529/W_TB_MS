@@ -5,7 +5,7 @@ using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Spreadsheet;
 
-namespace W_TB_jiankong.Models
+namespace W_TB_MS.Models
 {
     public enum CurveSeriesKind
     {

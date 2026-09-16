@@ -1,8 +1,8 @@
 using System.Text;
-using W_TB_jiankong.Modbus;
+using W_TB_MS.Modbus;
 using Xunit;
 
-namespace W_TB_jiankong.Tests;
+namespace W_TB_MS.Tests;
 
 public class Crc16Tests
 {

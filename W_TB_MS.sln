@@ -3,9 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "W_TB_MS", "W_TB_MS\W_TB_jiankong.csproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "W_TB_MS", "W_TB_MS\W_TB_MS.csproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "W_TB_MS.Tests", "W_TB_MS.Tests\W_TB_jiankong.Tests.csproj", "{8F358614-73A2-451F-BCE1-C39033FC5DFD}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "W_TB_MS.Tests", "W_TB_MS.Tests\W_TB_MS.Tests.csproj", "{8F358614-73A2-451F-BCE1-C39033FC5DFD}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

@@ -8,10 +8,10 @@ using System.Threading;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Globalization;
-using W_TB_jiankong.Modbus;
-using W_TB_jiankong.Models;
+using W_TB_MS.Modbus;
+using W_TB_MS.Models;
 
-namespace W_TB_jiankong
+namespace W_TB_MS
 {
     public class MainForm : Form
     {
@@ -1771,7 +1771,7 @@ namespace W_TB_jiankong
             }
             catch (Exception ex)
             {
-                AppendLog("ERR", System.Text.Encoding.UTF8.GetBytes($"写入 {address} 失败: {ex.Message}"));
+                AppendLog("ERR", $"写入 {address} 失败: {ex.Message}");
                 MessageBox.Show($"写入失败：{ex.Message}", "写入失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             finally
@@ -1973,7 +1973,7 @@ namespace W_TB_jiankong
                 ArchiveSettingsStore.SaveArchiveFolder(dialog.SelectedPath);
                 _archiveFolder = Path.GetFullPath(dialog.SelectedPath);
                 _toolTip.SetToolTip(btnArchiveFolder, _archiveFolder);
-                AppendLog("SYS", System.Text.Encoding.UTF8.GetBytes($"曲线存档路径: {_archiveFolder}"));
+                AppendLog("SYS", $"曲线存档路径: {_archiveFolder}");
             }
             catch (Exception ex)
             {
@@ -2003,7 +2003,12 @@ namespace W_TB_jiankong
                 {
                     UseWaitCursor = true;
                     lblStatus.Text = "正在完成曲线自动存档...";
-                    await _activeAutomaticArchiveTask;
+                    // 存档可能因目标盘离线等 IO 问题挂起，限时等待，超时后允许用户强制关闭。
+                    Task completed = await Task.WhenAny(
+                        _activeAutomaticArchiveTask,
+                        Task.Delay(TimeSpan.FromSeconds(30)));
+                    if (completed != _activeAutomaticArchiveTask)
+                        AppendLog("ERR", "等待自动存档超时（30 秒），未存档数据可在下次启动前手动导出");
                 }
 
                 bool hasUnsavedSamples = _timeData.Count > 0
@@ -2098,6 +2103,10 @@ namespace W_TB_jiankong
             }
         }
 
+        /// <summary>记录系统/错误文本消息（SYS/ERR）。</summary>
+        private void AppendLog(string direction, string message)
+            => AppendLog(direction, System.Text.Encoding.UTF8.GetBytes(message));
+
         private void AppendLog(string direction, byte[] data)
         {
             if (IsDisposed || Disposing)
@@ -2187,7 +2196,7 @@ namespace W_TB_jiankong
                 lblConnIndicator.Text = "连接成功";
                 lblConnIndicator.ForeColor = Color.Green;
                 cmbSlaveAddr.Enabled = false;
-                AppendLog("SYS", System.Text.Encoding.UTF8.GetBytes($"已连接 {cmbPort.SelectedItem} @ {_modbus.BaudRate}bps"));
+                AppendLog("SYS", $"已连接 {cmbPort.SelectedItem} @ {_modbus.BaudRate}bps");
 
                 StartPolling();
             }
@@ -2196,7 +2205,7 @@ namespace W_TB_jiankong
                 MessageBox.Show($"连接失败: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 lblConnIndicator.Text = "连接失败";
                 lblConnIndicator.ForeColor = Color.Red;
-                AppendLog("SYS", System.Text.Encoding.UTF8.GetBytes($"连接失败: {ex.Message}"));
+                AppendLog("SYS", $"连接失败: {ex.Message}");
                 _modbus.Close();
                 cmbSlaveAddr.Enabled = true;
             }
@@ -2335,7 +2344,7 @@ namespace W_TB_jiankong
                 // 串口已消失（USB 拔出）时等待重新枚举，避免对不存在的口反复 Open
                 if (!ModbusRtuClient.GetAvailablePorts().Contains(_lastPortName, StringComparer.OrdinalIgnoreCase))
                 {
-                    AppendLog("SYS", System.Text.Encoding.UTF8.GetBytes($"串口 {_lastPortName} 不存在，等待重新接入..."));
+                    AppendLog("SYS", $"串口 {_lastPortName} 不存在，等待重新接入...");
                     return false;
                 }
                 token.ThrowIfCancellationRequested();
@@ -2350,7 +2359,7 @@ namespace W_TB_jiankong
             }
             catch (Exception ex)
             {
-                AppendLog("SYS", System.Text.Encoding.UTF8.GetBytes($"重连失败: {ex.Message}"));
+                AppendLog("SYS", $"重连失败: {ex.Message}");
                 return false;
             }
         }
@@ -2359,7 +2368,7 @@ namespace W_TB_jiankong
         {
             if (InvokeRequired) { Invoke(() => UpdateReconnectStatus(text)); return; }
             lblStatus.Text = text;
-            AppendLog("SYS", System.Text.Encoding.UTF8.GetBytes(text));
+            AppendLog("SYS", text);
         }
 
         private async Task PollDataAsync(int generation)
@@ -2387,7 +2396,7 @@ namespace W_TB_jiankong
             }
             catch (Exception ex)
             {
-                AppendLog("ERR", System.Text.Encoding.UTF8.GetBytes(ex is TimeoutException ? "通信超时" : ex.Message));
+                AppendLog("ERR", ex is TimeoutException ? "通信超时" : ex.Message);
                 _failCount++;
                 if (_failCount >= ReconnectThreshold)
                 {
@@ -2423,7 +2432,7 @@ namespace W_TB_jiankong
                 return values;
 
             // 设备不支持合并读取时回退，保证老型号仍可使用。
-            AppendLog("SYS", System.Text.Encoding.UTF8.GetBytes("连续寄存器读取失败，回退到兼容分块模式"));
+            AppendLog("SYS", "连续寄存器读取失败，回退到兼容分块模式");
             values = ReadPollBlockSet(LegacyPollBlocks, generation, out essentialBlocksRead, out _);
             if (essentialBlocksRead == 0)
                 throw new TimeoutException("核心状态寄存器均未响应");
@@ -2456,8 +2465,8 @@ namespace W_TB_jiankong
                 catch (Exception ex)
                 {
                     hadFailure = true;
-                    AppendLog("ERR", System.Text.Encoding.UTF8.GetBytes(
-                        $"读取 {block.StartAddress}/{block.Quantity} 失败: {ex.Message}"));
+                    AppendLog("ERR",
+                        $"读取 {block.StartAddress}/{block.Quantity} 失败: {ex.Message}");
                 }
             }
             return values;
@@ -2586,10 +2595,18 @@ namespace W_TB_jiankong
 
             _timeData.Add(sampleTime.ToOADate());
             foreach (NumericCurveDefinition definition in NumericCurveDefinitions)
+            {
+                if (!HasNumericCurveValue(definition, values))
+                    return; // 寄存器块读取失败时整条样本不落库，保持各序列索引对齐
                 _numericCurveData[definition.Address].Add(DecodeNumericCurveValue(definition, values));
+            }
 
             foreach (ushort address in BitCurveRegisterAddresses)
-                _allBitRegisterData[address].Add(values[address]);
+            {
+                if (!values.TryGetValue(address, out ushort bitValue))
+                    return;
+                _allBitRegisterData[address].Add(bitValue);
+            }
 
             PruneExpiredCurveData(sampleTime);
             if (_activeAutomaticArchiveTask == null || _activeAutomaticArchiveTask.IsCompleted)
@@ -2760,8 +2777,8 @@ namespace W_TB_jiankong
                 {
                     CompactCurveHistoryData snapshot = CreateCurveHistorySnapshot(startIndex, endIndex);
                     (string logPath, string excelPath) = await SaveArchivePairAsync(snapshot);
-                    AppendLog("SYS", System.Text.Encoding.UTF8.GetBytes(
-                        $"6小时曲线已自动存档: {logPath} | {excelPath}"));
+                    AppendLog("SYS",
+                        $"6小时曲线已自动存档: {logPath} | {excelPath}");
                 }
 
                 _automaticArchiveSegmentStart = segmentEnd;
@@ -2771,8 +2788,8 @@ namespace W_TB_jiankong
             catch (Exception ex)
             {
                 _nextAutomaticArchiveRetryAt = DateTime.Now.AddMinutes(5);
-                AppendLog("ERR", System.Text.Encoding.UTF8.GetBytes(
-                    $"曲线自动存档失败，5分钟后重试: {ex.Message}"));
+                AppendLog("ERR",
+                    $"曲线自动存档失败，5分钟后重试: {ex.Message}");
             }
             finally
             {

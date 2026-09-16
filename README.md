@@ -23,7 +23,7 @@ W_TB_MS 是用于 W 系列热泵设备的 Windows Modbus RTU 监控工具。
 ```powershell
 dotnet restore W_TB_MS.sln
 dotnet build W_TB_MS.sln -c Release --no-restore
-dotnet test W_TB_MS.Tests/W_TB_jiankong.Tests.csproj -c Release --no-build
+dotnet test W_TB_MS.Tests/W_TB_MS.Tests.csproj -c Release --no-build
 ```
 
 ## 生成稳定软件包

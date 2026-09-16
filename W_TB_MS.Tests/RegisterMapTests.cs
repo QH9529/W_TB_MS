@@ -1,8 +1,8 @@
 using System.Reflection;
-using W_TB_jiankong.Models;
+using W_TB_MS.Models;
 using Xunit;
 
-namespace W_TB_jiankong.Tests;
+namespace W_TB_MS.Tests;
 
 public class RegisterMapTests
 {
@@ -106,7 +106,7 @@ public class RegisterMapTests
     [Fact]
     public void NumericCurveDefinitions_CoverAll39ProtocolValues()
     {
-        IReadOnlyList<ushort> addresses = W_TB_jiankong.MainForm.NumericCurveAddresses;
+        IReadOnlyList<ushort> addresses = W_TB_MS.MainForm.NumericCurveAddresses;
 
         Assert.Equal(39, addresses.Count);
         Assert.Equal(addresses.Count, addresses.Distinct().Count());
@@ -120,6 +120,6 @@ public class RegisterMapTests
     [Fact]
     public void CurveSelectors_HaveNoDefaultSelection()
     {
-        Assert.Equal(0, W_TB_jiankong.MainForm.DefaultCurveSelectionCount);
+        Assert.Equal(0, W_TB_MS.MainForm.DefaultCurveSelectionCount);
     }
 }

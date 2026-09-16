@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Version,
     [ValidateSet("win-x86", "win-x64")]
@@ -30,8 +30,8 @@ if ([string]::IsNullOrWhiteSpace($dotnetCommand) -or -not (& $dotnetCommand --li
 }
 
 $solutionPath = Join-Path $repositoryRoot "W_TB_MS.sln"
-$projectPath = Join-Path $repositoryRoot "W_TB_MS\W_TB_jiankong.csproj"
-$testProjectPath = Join-Path $repositoryRoot "W_TB_MS.Tests\W_TB_jiankong.Tests.csproj"
+$projectPath = Join-Path $repositoryRoot "W_TB_MS\W_TB_MS.csproj"
+$testProjectPath = Join-Path $repositoryRoot "W_TB_MS.Tests\W_TB_MS.Tests.csproj"
 $artifactsRoot = Join-Path $repositoryRoot "artifacts"
 $stagingRoot = Join-Path $artifactsRoot ".staging"
 $publishDirectory = Join-Path $stagingRoot "W_TB_MS-v$Version-$Runtime"

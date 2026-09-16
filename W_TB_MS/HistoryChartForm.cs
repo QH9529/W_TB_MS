@@ -1,8 +1,8 @@
 using System.Drawing;
 using System.Globalization;
-using W_TB_jiankong.Models;
+using W_TB_MS.Models;
 
-namespace W_TB_jiankong
+namespace W_TB_MS
 {
     public sealed class HistoryChartForm : Form
     {

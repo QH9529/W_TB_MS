@@ -1,9 +1,9 @@
 using System;
 using System.Drawing;
 using System.Windows.Forms;
-using W_TB_jiankong.Modbus;
+using W_TB_MS.Modbus;
 
-namespace W_TB_jiankong
+namespace W_TB_MS
 {
     public class RegisterToolForm : Form
     {

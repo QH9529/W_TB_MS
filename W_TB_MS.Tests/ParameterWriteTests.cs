@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace W_TB_jiankong.Tests;
+namespace W_TB_MS.Tests;
 
 public class ParameterWriteTests
 {

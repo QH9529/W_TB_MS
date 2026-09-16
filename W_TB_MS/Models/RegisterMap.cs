@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace W_TB_jiankong.Models
+namespace W_TB_MS.Models
 {
     public enum RegisterAccess
     {

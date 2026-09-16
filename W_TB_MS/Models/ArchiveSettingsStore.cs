@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace W_TB_jiankong.Models
+namespace W_TB_MS.Models
 {
     internal sealed class ArchiveSettings
     {

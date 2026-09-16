@@ -4,7 +4,7 @@ using System.IO.Ports;
 using System.Threading;
 using System.Diagnostics;
 
-namespace W_TB_jiankong.Modbus
+namespace W_TB_MS.Modbus
 {
     /// <summary>
     /// W系列热泵 Modbus RTU 串口通信客户端
@@ -255,36 +255,36 @@ namespace W_TB_jiankong.Modbus
         private void ValidateResponse(byte[] response, byte expectedFunctionCode)
         {
             if (response.Length < 6)
-                throw new Exception("响应数据不完整");
+                throw new InvalidDataException("响应数据不完整");
 
             // W协议：第2字节为响应标识，应为0xFF
             if (response[1] != 0xFF)
-                throw new Exception($"响应标识错误: 0x{response[1]:X2}，期望 0xFF");
+                throw new InvalidDataException($"响应标识错误: 0x{response[1]:X2}，期望 0xFF");
 
             if (response[0] != SlaveAddress)
-                throw new Exception($"从机地址不匹配: 0x{response[0]:X2}，期望 0x{SlaveAddress:X2}");
+                throw new InvalidDataException($"从机地址不匹配: 0x{response[0]:X2}，期望 0x{SlaveAddress:X2}");
 
             // 检查功能码（异常响应时最高位为1）
             byte funcCode = response[2];
             if ((funcCode & 0x80) != 0)
             {
                 string errorCode = response.Length > 3 ? $"0x{response[3]:X2}" : "未知";
-                throw new Exception($"Modbus异常响应: 功能码=0x{funcCode:X2}, 异常码={errorCode}");
+                throw new InvalidDataException($"Modbus异常响应: 功能码=0x{funcCode:X2}, 异常码={errorCode}");
             }
 
             if (funcCode != expectedFunctionCode)
-                throw new Exception($"功能码不匹配: 0x{funcCode:X2}，期望 0x{expectedFunctionCode:X2}");
+                throw new InvalidDataException($"功能码不匹配: 0x{funcCode:X2}，期望 0x{expectedFunctionCode:X2}");
 
             if (funcCode is 0x03 or 0x04 && response.Length < 8)
-                throw new Exception("读响应缺少地址或字节数");
+                throw new InvalidDataException("读响应缺少地址或字节数");
             int expectedLength = funcCode is 0x03 or 0x04 ? response[5] + 8 : 9;
             if (response.Length != expectedLength)
-                throw new Exception($"响应帧长度错误: 实际={response.Length}, 期望={expectedLength}");
+                throw new InvalidDataException($"响应帧长度错误: 实际={response.Length}, 期望={expectedLength}");
 
             ushort expectedCrc = CalculateCrc(response, response.Length - 2);
             ushort actualCrc = (ushort)(response[^2] | (response[^1] << 8));
             if (expectedCrc != actualCrc)
-                throw new Exception($"CRC校验失败: 计算=0x{expectedCrc:X4}, 收到=0x{actualCrc:X4}");
+                throw new InvalidDataException($"CRC校验失败: 计算=0x{expectedCrc:X4}, 收到=0x{actualCrc:X4}");
         }
 
         /// <summary>构造读寄存器请求帧（W协议共9字节，CRC低字节在前）</summary>
