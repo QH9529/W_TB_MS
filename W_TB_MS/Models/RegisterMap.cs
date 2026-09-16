@@ -80,6 +80,7 @@ namespace W_TB_jiankong.Models
         public const ushort DC_VOLTAGE_ADDR = 30239;
         public const ushort COMPRESSOR_CURRENT_ADDR = 30240;
         public const ushort DC_FAN_CURRENT_ADDR = 30241;
+        public const ushort COMPRESSOR_IPM_TEMP_ADDR = 30242;
         #endregion
 
         #region --- 本地故障记录段 30301~30399 ---
@@ -458,6 +459,7 @@ namespace W_TB_jiankong.Models
         {
             [0] = "热水下温度传感器故障",
             [1] = "热水进水温度过低",
+            [2] = "冻机预警",
             [15] = "空调水流量不足（未锁定）",
         };
 

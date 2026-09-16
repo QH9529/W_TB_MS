@@ -61,7 +61,8 @@ public class RegisterMapTests
         Assert.Equal(16, RegisterMap.FaultReg2Bits.Count);
         Assert.Equal(16, RegisterMap.FaultReg3Bits.Count);
         Assert.Equal(16, RegisterMap.FaultReg4Bits.Count);
-        Assert.Equal(new[] { 0, 1, 15 }, RegisterMap.FaultReg5Bits.Keys.Order());
+        Assert.Equal(new[] { 0, 1, 2, 15 }, RegisterMap.FaultReg5Bits.Keys.Order());
+        Assert.Equal("冻机预警", RegisterMap.FaultReg5Bits[2]);
         Assert.Equal(Enumerable.Range(0, 16), RegisterMap.StatusWordBits.Keys.Order());
         Assert.Equal(Enumerable.Range(0, 16), RegisterMap.DeviceStatusBits.Keys.Order());
         Assert.Equal(Enumerable.Range(0, 11), RegisterMap.DipSwitchBits.Keys.Order());
@@ -86,7 +87,7 @@ public class RegisterMapTests
         Add(30201, RegisterMap.DeviceStatusBits.Keys);
         Add(30229, RegisterMap.DipSwitchBits.Keys);
 
-        Assert.Equal(110, pairs.Count);
+        Assert.Equal(111, pairs.Count);
         Assert.Equal(pairs.Count, pairs.Distinct().Count());
     }
 
@@ -103,16 +104,17 @@ public class RegisterMapTests
     }
 
     [Fact]
-    public void NumericCurveDefinitions_CoverAll38ProtocolValues()
+    public void NumericCurveDefinitions_CoverAll39ProtocolValues()
     {
         IReadOnlyList<ushort> addresses = W_TB_jiankong.MainForm.NumericCurveAddresses;
 
-        Assert.Equal(38, addresses.Count);
+        Assert.Equal(39, addresses.Count);
         Assert.Equal(addresses.Count, addresses.Distinct().Count());
         Assert.Contains((ushort)30108, addresses);
         Assert.Contains((ushort)30217, addresses);
         Assert.Contains((ushort)30235, addresses);
         Assert.Contains((ushort)30241, addresses);
+        Assert.Contains((ushort)30242, addresses);
     }
 
     [Fact]

@@ -51,6 +51,7 @@ public class ChartHoverTests
     [InlineData(30215, 456, 45.6)]
     [InlineData(30232, 87, 8.7)]
     [InlineData(30233, 9500, 9500)]
+    [InlineData(30242, 253, 25.3)]
     [InlineData(30237, 10000, 10000)]
     public void DecodeNumericCurveValue_MatchesDisplayedDecimalValue(
         ushort address,
@@ -137,7 +138,7 @@ public class ChartHoverTests
     public void FullBitRegisterStorage_PreservesEveryDefinedBitCurve()
     {
         Assert.Equal(8, MainForm.StoredBitRegisterCount);
-        Assert.Equal(110, MainForm.StoredBitCurveCount);
+        Assert.Equal(111, MainForm.StoredBitCurveCount);
 
         ushort[] samples = { 0x0000, 0xFFFF, 0xA55A };
         for (int bit = 0; bit < 16; bit++)
