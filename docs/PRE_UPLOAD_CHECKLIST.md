@@ -19,7 +19,7 @@
 
 - 执行 `scripts/Build-Release.ps1`。
 - 验证测试全部通过。
-- 从生成的 ZIP 启动 `W_TB_MS.exe`。
+- 从生成的 Setup.exe 完成一次实际安装。
 - 使用 `scripts/Install-Version.ps1` 安装版本。
 - 使用 `scripts/Restore-Version.ps1` 完成一次实际回档。
 - 提交稳定基线后创建 `v1.0.0` 标签。
