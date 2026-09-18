@@ -98,7 +98,7 @@ public class RegisterMapTests
             new ushort[] { 30101, 30102, 30103, 30104, 30105 },
             MainForm.FaultCurveAddresses);
         Assert.Equal(
-            new ushort[] { 30106, 30201, 30229 },
+            new ushort[] { 30106, 30201, 30229, 40201, 40202, 40212 },
             MainForm.StatusCurveAddresses);
         Assert.Empty(MainForm.FaultCurveAddresses.Intersect(MainForm.StatusCurveAddresses));
     }

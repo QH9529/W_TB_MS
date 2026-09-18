@@ -447,12 +447,36 @@ namespace W_TB_MS
             AddStatusRegister(30106, "主机运行状态", RegisterMap.StatusWordBits);
             AddStatusRegister(30201, "设备运行状态", RegisterMap.DeviceStatusBits);
             AddStatusRegister(30229, "拨码及阀门状态", RegisterMap.DipSwitchBits);
+            // 40201/40202/40212 为枚举值寄存器，按位映射为状态曲线：
+            // 40201: 0x0001=制冷(bit0)、0x0002=制热(bit1)；40202/40212: bit0。
+            AddStatusRegister(
+                40201,
+                "热泵主机工作模式",
+                new Dictionary<int, BitDefinition>
+                {
+                    [0] = new("工作模式-制冷", "未激活", "制冷"),
+                    [1] = new("工作模式-制热", "未激活", "制热")
+                });
+            AddStatusRegister(
+                40202,
+                "生活热水功能",
+                new Dictionary<int, BitDefinition>
+                {
+                    [0] = new("生活热水功能启用", "关闭", "打开")
+                });
+            AddStatusRegister(
+                40212,
+                "生活热水模式",
+                new Dictionary<int, BitDefinition>
+                {
+                    [0] = new("生活热水模式-舒适", "节能", "舒适")
+                });
 
             return definitions;
         }
 
         private static bool IsStatusCurve(BitCurveDefinition definition) =>
-            definition.Address is 30106 or 30201 or 30229;
+            definition.Address is 30106 or 30201 or 30229 or 40201 or 40202 or 40212;
 
         private static HashSet<ushort> CreateCurveSampleAddresses()
         {

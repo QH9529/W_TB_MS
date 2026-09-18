@@ -83,7 +83,13 @@ foreach ($rt in @("win-x64", "win-x86")) {
     Compress-Archive -Path (Join-Path $publishPaths[$rt] "*") -DestinationPath $payloadPath -CompressionLevel Optimal
 }
 
-# 3. 编译安装程序（payload 作为嵌入资源打进单个 Setup.exe）
+# 3. 同步安装程序源码中的版本号（界面标题、资源名等使用硬编码版本），必须在编译前执行
+$programCsPath = Join-Path $setupBuilderDir "Program.cs"
+$programCs = [IO.File]::ReadAllText($programCsPath)
+$programCs = $programCs -replace 'v\d+\.\d+\.\d+', "v$Version"
+[IO.File]::WriteAllText($programCsPath, $programCs, [Text.UTF8Encoding]::new($false))
+
+# 4. 编译安装程序（payload 作为嵌入资源打进单个 Setup.exe）
 if (Test-Path -LiteralPath $setupPath) {
     Remove-Item -LiteralPath $setupPath -Force
 }
@@ -101,11 +107,5 @@ if (-not (Test-Path -LiteralPath $builtSetup)) {
 Move-Item -LiteralPath $builtSetup -Destination $setupPath -Force
 
 Remove-Item -LiteralPath $stagingRoot -Recurse -Force
-
-# 4. 同步安装程序源码中的版本号（界面标题、资源名等使用硬编码版本）
-$programCsPath = Join-Path $setupBuilderDir "Program.cs"
-$programCs = [IO.File]::ReadAllText($programCsPath)
-$programCs = $programCs -replace 'v\d+\.\d+\.\d+', "v$Version"
-[IO.File]::WriteAllText($programCsPath, $programCs, [Text.UTF8Encoding]::new($false))
 
 Write-Host "安装包: $setupPath"
