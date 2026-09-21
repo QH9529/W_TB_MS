@@ -137,8 +137,8 @@ public class ChartHoverTests
     [Fact]
     public void FullBitRegisterStorage_PreservesEveryDefinedBitCurve()
     {
-        Assert.Equal(11, MainForm.StoredBitRegisterCount);
-        Assert.Equal(115, MainForm.StoredBitCurveCount);
+        Assert.Equal(13, MainForm.StoredBitRegisterCount);
+        Assert.Equal(121, MainForm.StoredBitCurveCount);
 
         ushort[] samples = { 0x0000, 0xFFFF, 0xA55A };
         for (int bit = 0; bit < 16; bit++)

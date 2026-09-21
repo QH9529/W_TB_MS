@@ -98,7 +98,7 @@ public class RegisterMapTests
             new ushort[] { 30101, 30102, 30103, 30104, 30105 },
             MainForm.FaultCurveAddresses);
         Assert.Equal(
-            new ushort[] { 30106, 30201, 30229, 40201, 40202, 40212 },
+            new ushort[] { 30106, 30201, 30229, 40201, 40202, 40212, 30990, 30991 },
             MainForm.StatusCurveAddresses);
         Assert.Empty(MainForm.FaultCurveAddresses.Intersect(MainForm.StatusCurveAddresses));
     }
@@ -121,5 +121,51 @@ public class RegisterMapTests
     public void CurveSelectors_HaveNoDefaultSelection()
     {
         Assert.Equal(0, W_TB_MS.MainForm.DefaultCurveSelectionCount);
+    }
+
+    [Fact]
+    public void ComputeRuntimeModeBits_MapsStatusWordCorrectly()
+    {
+        // 30106 bit3~5=0（制冷系）、bit6=0 → 制冷
+        Assert.Equal(W_TB_MS.MainForm.MODE_BIT_COOLING, W_TB_MS.MainForm.ComputeRuntimeModeBits(new Dictionary<ushort, ushort> { [30106] = 0b0000 }));
+        // bit3~5=1（制冷待机）+ bit6=1 → 制冷+热水
+        Assert.Equal(W_TB_MS.MainForm.MODE_BIT_COOLING | W_TB_MS.MainForm.MODE_BIT_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeModeBits(new Dictionary<ushort, ushort> { [30106] = 0b0100_1000 }));
+        // bit3~5=3（制热系）、bit6=0 → 制热
+        Assert.Equal(W_TB_MS.MainForm.MODE_BIT_HEATING, W_TB_MS.MainForm.ComputeRuntimeModeBits(new Dictionary<ushort, ushort> { [30106] = 0b1_1000 }));
+        // bit3~5=3 + bit6=1 → 制热+热水
+        Assert.Equal(W_TB_MS.MainForm.MODE_BIT_HEATING | W_TB_MS.MainForm.MODE_BIT_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeModeBits(new Dictionary<ushort, ushort> { [30106] = 0b0101_1000 }));
+        // bit3~5=6（除霜中）→ 无取向
+        Assert.Equal(0, W_TB_MS.MainForm.ComputeRuntimeModeBits(new Dictionary<ushort, ushort> { [30106] = 0b11_0000 }));
+        // 30106 缺失 → 0
+        Assert.Equal(0, W_TB_MS.MainForm.ComputeRuntimeModeBits(new Dictionary<ushort, ushort>()));
+    }
+
+    [Fact]
+    public void ComputeSetModeBits_MapsSetRegistersCorrectly()
+    {
+        // 40201=1（制冷）、40202=0 → 制冷
+        Assert.Equal(W_TB_MS.MainForm.MODE_BIT_COOLING, W_TB_MS.MainForm.ComputeSetModeBits(new Dictionary<ushort, ushort> { [40201] = 1, [40202] = 0 }));
+        // 40201=1、40202=1 → 制冷+热水
+        Assert.Equal(W_TB_MS.MainForm.MODE_BIT_COOLING | W_TB_MS.MainForm.MODE_BIT_HOT_WATER, W_TB_MS.MainForm.ComputeSetModeBits(new Dictionary<ushort, ushort> { [40201] = 1, [40202] = 1 }));
+        // 40201=2、40202=1 → 制热+热水
+        Assert.Equal(W_TB_MS.MainForm.MODE_BIT_HEATING | W_TB_MS.MainForm.MODE_BIT_HOT_WATER, W_TB_MS.MainForm.ComputeSetModeBits(new Dictionary<ushort, ushort> { [40201] = 2, [40202] = 1 }));
+        // 40201 未知值 → 0
+        Assert.Equal(0, W_TB_MS.MainForm.ComputeSetModeBits(new Dictionary<ushort, ushort> { [40201] = 5, [40202] = 1 }));
+        // 寄存器缺失 → 0
+        Assert.Equal(0, W_TB_MS.MainForm.ComputeSetModeBits(new Dictionary<ushort, ushort> { [40201] = 1 }));
+    }
+
+    [Fact]
+    public void DeriveModeRegisters_InjectsVirtualAddresses()
+    {
+        var values = new Dictionary<ushort, ushort> { [30106] = 0b0101_1000, [40201] = 2, [40202] = 0 };
+
+        W_TB_MS.MainForm.DeriveModeRegisters(values);
+
+        Assert.Equal(W_TB_MS.MainForm.MODE_BIT_HEATING | W_TB_MS.MainForm.MODE_BIT_HOT_WATER, values[W_TB_MS.MainForm.RUNTIME_MODE_CURVE_ADDR]);
+        Assert.Equal(W_TB_MS.MainForm.MODE_BIT_HEATING, values[W_TB_MS.MainForm.SET_MODE_CURVE_ADDR]);
+        // 虚拟地址不得进入轮询采样地址集合
+        Assert.DoesNotContain(W_TB_MS.MainForm.RUNTIME_MODE_CURVE_ADDR, W_TB_MS.MainForm.RequiredCurveSampleAddresses);
+        Assert.DoesNotContain(W_TB_MS.MainForm.SET_MODE_CURVE_ADDR, W_TB_MS.MainForm.RequiredCurveSampleAddresses);
     }
 }

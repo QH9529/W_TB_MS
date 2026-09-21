@@ -473,16 +473,40 @@ namespace W_TB_MS
                 {
                     [0] = new("生活热水模式-舒适", "节能", "舒适")
                 });
+            // 虚拟状态曲线（无真实寄存器，轮询时由 DeriveModeRegisters 派生）：
+            // 30990 运行模式（30106 bit3~5+bit6）、30991 设置模式（40201+40202），按位画线。
+            AddStatusRegister(
+                RUNTIME_MODE_CURVE_ADDR,
+                "运行模式",
+                new Dictionary<int, BitDefinition>
+                {
+                    [0] = new("运行模式-制冷", "停止", "制冷运行"),
+                    [1] = new("运行模式-制热", "停止", "制热运行"),
+                    [2] = new("运行模式-热水", "未运行", "热水运行")
+                });
+            AddStatusRegister(
+                SET_MODE_CURVE_ADDR,
+                "设置模式",
+                new Dictionary<int, BitDefinition>
+                {
+                    [0] = new("设置模式-制冷", "未设置", "制冷"),
+                    [1] = new("设置模式-制热", "未设置", "制热"),
+                    [2] = new("设置模式-热水", "未启用", "已启用")
+                });
 
             return definitions;
         }
 
         private static bool IsStatusCurve(BitCurveDefinition definition) =>
-            definition.Address is 30106 or 30201 or 30229 or 40201 or 40202 or 40212;
+            definition.Address is 30106 or 30201 or 30229 or 40201 or 40202 or 40212
+                or RUNTIME_MODE_CURVE_ADDR or SET_MODE_CURVE_ADDR;
 
         private static HashSet<ushort> CreateCurveSampleAddresses()
         {
-            var addresses = BitCurveRegisterAddresses.ToHashSet();
+            // 虚拟模式寄存器（30990/30991）不参与设备轮询，采样地址集合需排除。
+            var addresses = BitCurveRegisterAddresses
+                .Where(address => address != RUNTIME_MODE_CURVE_ADDR && address != SET_MODE_CURVE_ADDR)
+                .ToHashSet();
             foreach (NumericCurveDefinition definition in NumericCurveDefinitions)
             {
                 addresses.Add(definition.Address);
@@ -571,20 +595,18 @@ namespace W_TB_MS
             _archiveFolder = ArchiveSettingsStore.LoadArchiveFolder();
             InitializeComponent();
             _modbus.FrameObserved += AppendLog;
-            // 首次启动只显示非阻塞提醒，避免系统文件夹选择框停留在后台而遮住主界面。
+            // 每次启动，只要未设置存档路径就弹窗提醒并引导选择目录。
+            // 弹窗放在 Shown 之后，确保主界面已显示、选择框不会停留在后台被遮住。
             Shown += (s, e) => BeginInvoke(new Action(() =>
             {
-                if (!IsDisposed && !Disposing)
+                if (!IsDisposed && !Disposing && string.IsNullOrWhiteSpace(_archiveFolder))
                 {
-                    if (string.IsNullOrWhiteSpace(_archiveFolder))
-                    {
-                        _toolTip.Show(
-                            "请点击“存档路径”选择曲线自动存档目录",
-                            btnArchiveFolder,
-                            0,
-                            btnArchiveFolder.Height + 4,
-                            7000);
-                    }
+                    MessageBox.Show(
+                        "尚未设置曲线存档路径，自动存档（LOG/Excel）将无法保存。\n请在下一步选择存档目录。",
+                        "存档路径提醒",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    ChooseArchiveFolder();
                 }
             }));
             Shown += (s, e) =>
@@ -2414,6 +2436,7 @@ namespace W_TB_MS
                 Dictionary<ushort, ushort> values = await Task.Run(() => ReadPollRegisters(generation));
                 if (generation != Volatile.Read(ref _pollGeneration))
                     return;
+                DeriveModeRegisters(values);
                 UpdateDisplay(values);
 
                 SetLabelText(lblUpdateTime, $"更新: {DateTime.Now:HH:mm:ss.fff}");
@@ -3374,51 +3397,93 @@ namespace W_TB_MS
 
         private static string WorkModeMapGet(ushort m) => RegisterMap.WorkModeMap.TryGetValue(m, out var v) ? v : $"未知({m})";
 
+        // ---------------- 虚拟状态曲线：运行模式 / 设置模式 ----------------
+        // 这两个地址是软件内部编号，设备上无对应寄存器，不参与 Modbus 轮询，
+        // 仅在轮询结果分发时由真实寄存器派生（见 DeriveModeRegisters），用于状态页曲线与导出。
+        // 派生值按位掩码编码，便于状态页按位画线：bit0=制冷系，bit1=制热系，bit2=热水。
+        internal const ushort RUNTIME_MODE_CURVE_ADDR = 30990; // 运行模式（30106 bit3~5 + bit6 派生）
+        internal const ushort SET_MODE_CURVE_ADDR = 30991;     // 设置模式（40201 + 40202 派生）
+
+        internal const ushort MODE_BIT_COOLING = 0x0001; // 制冷（运行中 / 已设置）
+        internal const ushort MODE_BIT_HEATING = 0x0002; // 制热（运行中 / 已设置）
+        internal const ushort MODE_BIT_HOT_WATER = 0x0004; // 热水（运行中 / 已启用）
+
+        internal static readonly Dictionary<ushort, string> RuntimeModeMeanings = new()
+        {
+            [0] = "无",
+            [MODE_BIT_COOLING] = "制冷运行",
+            [MODE_BIT_HEATING] = "制热运行",
+            [MODE_BIT_COOLING | MODE_BIT_HOT_WATER] = "制冷+热水运行",
+            [MODE_BIT_HEATING | MODE_BIT_HOT_WATER] = "制热+热水运行",
+        };
+
+        internal static readonly Dictionary<ushort, string> SetModeMeanings = new()
+        {
+            [0] = "无",
+            [MODE_BIT_COOLING] = "制冷",
+            [MODE_BIT_HEATING] = "制热",
+            [MODE_BIT_COOLING | MODE_BIT_HOT_WATER] = "制冷+热水",
+            [MODE_BIT_HEATING | MODE_BIT_HOT_WATER] = "制热+热水",
+        };
+
         /// <summary>
-        /// 机组运行模式：仅由 30106 实际状态判断——bit3~5（0~2=制冷系，3~5=制热系）+ bit6（生活热水运行中）。
-        /// 30106 缺失或处于除霜/预热等无法判定取向的值时返回"数据缺失"。
+        /// 由 30106 实际状态计算运行模式位掩码：bit3~5（0~2=制冷系，3~5=制热系）+ bit6（生活热水运行中）。
+        /// 30106 缺失或处于除霜/预热等无法判定取向的值时返回 0（无）。
         /// </summary>
-        private static string RuntimeModeText(IReadOnlyDictionary<ushort, ushort> values)
+        internal static ushort ComputeRuntimeModeBits(IReadOnlyDictionary<ushort, ushort> values)
         {
             if (!values.TryGetValue(RegisterMap.STATUS_WORD_ADDR, out ushort status))
-                return "数据缺失";
+                return 0;
 
-            string baseMode = ((status >> 3) & 0x07) switch
+            ushort bits = ((status >> 3) & 0x07) switch
             {
-                0 or 1 or 2 => "制冷",
-                3 or 4 or 5 => "制热",
-                _ => null // 6=除霜中 / 7=压缩机预热：无明确制冷制热取向
+                0 or 1 or 2 => MODE_BIT_COOLING,
+                3 or 4 or 5 => MODE_BIT_HEATING,
+                _ => 0 // 6=除霜中 / 7=压缩机预热：无明确制冷制热取向
             };
 
-            if (baseMode == null)
-                return "数据缺失";
-
-            bool hotWater = (status & 0x0040) != 0; // bit6 生活热水运行状态
-            return hotWater ? $"{baseMode}+热水运行" : $"{baseMode}运行";
+            if ((status & 0x0040) != 0) // bit6 生活热水运行状态
+                bits |= MODE_BIT_HOT_WATER;
+            return bits;
         }
 
         /// <summary>
-        /// 设置模式：由 40201（工作模式设置：1=制冷，2=制热）与 40202（生活热水启用）组合。
-        /// 数据缺失或未知值时返回"数据缺失"。
+        /// 由 40201（工作模式设置：1=制冷，2=制热）与 40202（生活热水启用）计算设置模式位掩码。
+        /// 工作模式未知或寄存器缺失时返回 0（无），热水位仅在制冷/制热可判定时才有效。
         /// </summary>
-        private static string SetModeText(IReadOnlyDictionary<ushort, ushort> values)
+        internal static ushort ComputeSetModeBits(IReadOnlyDictionary<ushort, ushort> values)
         {
             if (!values.TryGetValue(RegisterMap.SET_WORK_MODE_ADDR, out ushort mode) ||
                 !values.TryGetValue(RegisterMap.HOT_WATER_ENABLE_ADDR, out ushort hotWaterRaw))
-                return "数据缺失";
+                return 0;
 
-            string baseMode = mode switch
+            ushort bits = mode switch
             {
-                1 => "制冷",
-                2 => "制热",
-                _ => null
+                1 => MODE_BIT_COOLING,
+                2 => MODE_BIT_HEATING,
+                _ => 0
             };
 
-            if (baseMode == null)
-                return "数据缺失";
+            if (bits == 0) // 工作模式未知：仅热水无法构成有效模式
+                return 0;
 
-            return hotWaterRaw != 0 ? $"{baseMode}+热水" : baseMode;
+            if (hotWaterRaw != 0)
+                bits |= MODE_BIT_HOT_WATER;
+            return bits;
         }
+
+        /// <summary>轮询后向 values 注入虚拟模式寄存器（30990/30991），供状态页曲线与导出使用。</summary>
+        internal static void DeriveModeRegisters(Dictionary<ushort, ushort> values)
+        {
+            values[RUNTIME_MODE_CURVE_ADDR] = ComputeRuntimeModeBits(values);
+            values[SET_MODE_CURVE_ADDR] = ComputeSetModeBits(values);
+        }
+
+        private static string RuntimeModeText(IReadOnlyDictionary<ushort, ushort> values) =>
+            RuntimeModeMeanings.TryGetValue(ComputeRuntimeModeBits(values), out var runtimeText) ? runtimeText : "数据缺失";
+
+        private static string SetModeText(IReadOnlyDictionary<ushort, ushort> values) =>
+            SetModeMeanings.TryGetValue(ComputeSetModeBits(values), out var setText) ? setText : "数据缺失";
 
         private static string SilentMapGet(ushort m) => RegisterMap.SilentModeMap.TryGetValue(m, out var v) ? v : $"未知({m})";
 
