@@ -121,6 +121,8 @@ namespace W_TB_MS
         private Label lblFaultCode = null!;
         private ListBox lstFaults = null!;
         private Label lblWorkMode = null!;
+        private Label lblRuntimeMode = null!;
+        private Label lblSetMode = null!;
         private string _lastFaultSignature = string.Empty;
         private int _lastFaultCount = -1;
 
@@ -648,6 +650,8 @@ namespace W_TB_MS
 
             lblStatus = new Label { Text = "未连接", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(0, 4, 18, 0) };
             lblWorkMode = new Label { Text = "工作状态: --", AutoSize = true, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold), Margin = new Padding(0, 4, 18, 0) };
+            lblRuntimeMode = new Label { Text = "运行模式: --", AutoSize = true, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold), ForeColor = Color.Red, Margin = new Padding(0, 4, 18, 0) };
+            lblSetMode = new Label { Text = "设置模式: --", AutoSize = true, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold), ForeColor = Color.Black, Margin = new Padding(0, 4, 18, 0) };
             lblFaultCode = new Label { Text = "故障汇总: 等待读取", AutoSize = true, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold), ForeColor = Color.Gray, Margin = new Padding(0, 4, 18, 0) };
             lblUpdateTime = new Label { Text = "", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(0, 4, 0, 0) };
 
@@ -661,7 +665,7 @@ namespace W_TB_MS
             };
             connectionSummary.Controls.AddRange(new Control[]
             {
-                lblStatus, lblWorkMode, lblFaultCode, lblUpdateTime
+                lblStatus, lblWorkMode, lblRuntimeMode, lblSetMode, lblFaultCode, lblUpdateTime
             });
 
             panelTop.Controls.AddRange(new Control[] {
@@ -2566,11 +2570,15 @@ namespace W_TB_MS
                 string defrostText = Has(30201)
                     ? (defrostRequested || defrostRunning ? "是" : "否")
                     : "数据缺失";
-                SetLabelText(lblWorkMode, $"工作状态: 电源 {(isOn ? "开机" : "关机")} | 模式 {WorkModeMapGet(workMode)} | 静音 {silentText} | 除霜 {defrostText}");
+                SetLabelText(lblWorkMode, $"工作状态: 电源 {(isOn ? "开机" : "关机")} | 静音 {silentText} | 除霜 {defrostText}");
+                SetLabelText(lblRuntimeMode, $"运行模式: {RuntimeModeText(values)}", Color.Red);
+                SetLabelText(lblSetMode, $"设置模式: {SetModeText(values)}", Color.Black);
             }
             else
             {
                 SetLabelText(lblWorkMode, "工作状态: 数据不完整");
+                SetLabelText(lblRuntimeMode, "运行模式: --", Color.Red);
+                SetLabelText(lblSetMode, "设置模式: --", Color.Black);
             }
 
             int faultCount = -1;
@@ -3365,6 +3373,53 @@ namespace W_TB_MS
         }
 
         private static string WorkModeMapGet(ushort m) => RegisterMap.WorkModeMap.TryGetValue(m, out var v) ? v : $"未知({m})";
+
+        /// <summary>
+        /// 机组运行模式：仅由 30106 实际状态判断——bit3~5（0~2=制冷系，3~5=制热系）+ bit6（生活热水运行中）。
+        /// 30106 缺失或处于除霜/预热等无法判定取向的值时返回"数据缺失"。
+        /// </summary>
+        private static string RuntimeModeText(IReadOnlyDictionary<ushort, ushort> values)
+        {
+            if (!values.TryGetValue(RegisterMap.STATUS_WORD_ADDR, out ushort status))
+                return "数据缺失";
+
+            string baseMode = ((status >> 3) & 0x07) switch
+            {
+                0 or 1 or 2 => "制冷",
+                3 or 4 or 5 => "制热",
+                _ => null // 6=除霜中 / 7=压缩机预热：无明确制冷制热取向
+            };
+
+            if (baseMode == null)
+                return "数据缺失";
+
+            bool hotWater = (status & 0x0040) != 0; // bit6 生活热水运行状态
+            return hotWater ? $"{baseMode}+热水运行" : $"{baseMode}运行";
+        }
+
+        /// <summary>
+        /// 设置模式：由 40201（工作模式设置：1=制冷，2=制热）与 40202（生活热水启用）组合。
+        /// 数据缺失或未知值时返回"数据缺失"。
+        /// </summary>
+        private static string SetModeText(IReadOnlyDictionary<ushort, ushort> values)
+        {
+            if (!values.TryGetValue(RegisterMap.SET_WORK_MODE_ADDR, out ushort mode) ||
+                !values.TryGetValue(RegisterMap.HOT_WATER_ENABLE_ADDR, out ushort hotWaterRaw))
+                return "数据缺失";
+
+            string baseMode = mode switch
+            {
+                1 => "制冷",
+                2 => "制热",
+                _ => null
+            };
+
+            if (baseMode == null)
+                return "数据缺失";
+
+            return hotWaterRaw != 0 ? $"{baseMode}+热水" : baseMode;
+        }
+
         private static string SilentMapGet(ushort m) => RegisterMap.SilentModeMap.TryGetValue(m, out var v) ? v : $"未知({m})";
 
         protected override void OnFormClosed(FormClosedEventArgs e)
