@@ -206,6 +206,135 @@ namespace W_TB_MS
             bool SelectedByDefault = false,
             bool UseRightAxis = false);
 
+        // === 枚举阶梯线数据源（用于运行模式 0~5 阶梯图）===
+        internal sealed class EnumScatterSource : ScottPlot.IScatterSource
+        {
+            private readonly List<double> _times;
+            private readonly List<ushort> _values;
+            private readonly IReadOnlyList<ScottPlot.Coordinates> _points;
+            private int _minRenderIndex;
+            private int _maxRenderIndex = int.MaxValue;
+            private readonly Dictionary<ushort, string> _meanings;
+
+            internal EnumScatterSource(List<double> times, List<ushort> values, Dictionary<ushort, string> meanings)
+            {
+                _times = times;
+                _values = values;
+                _meanings = meanings;
+                _points = new CoordinatesView(this);
+            }
+
+            public IReadOnlyList<ScottPlot.Coordinates> GetScatterPoints() => _points;
+
+            public ScottPlot.DataPoint GetNearest(
+                ScottPlot.Coordinates mouseCoordinates,
+                ScottPlot.RenderDetails renderDetails,
+                float maxDistance)
+            {
+                int index = FindNearestIndex(mouseCoordinates.X);
+                return IsWithinDistance(index, mouseCoordinates, renderDetails, maxDistance)
+                    ? new ScottPlot.DataPoint(GetPoint(index), index)
+                    : ScottPlot.DataPoint.None;
+            }
+
+            public ScottPlot.DataPoint GetNearestX(
+                ScottPlot.Coordinates mouseCoordinates,
+                ScottPlot.RenderDetails renderDetails,
+                float maxDistance)
+            {
+                int index = FindNearestIndex(mouseCoordinates.X);
+                if (index < 0 || !double.IsFinite(renderDetails.PxPerUnitX))
+                    return ScottPlot.DataPoint.None;
+
+                double distance = Math.Abs((_times[index] - mouseCoordinates.X) * renderDetails.PxPerUnitX);
+                return distance <= maxDistance
+                    ? new ScottPlot.DataPoint(GetPoint(index), index)
+                    : ScottPlot.DataPoint.None;
+            }
+
+            public ScottPlot.CoordinateRange GetLimitsX() =>
+                _times.Count == 0
+                    ? new ScottPlot.CoordinateRange(0, 1)
+                    : new ScottPlot.CoordinateRange(_times[0], _times[^1]);
+
+            public ScottPlot.CoordinateRange GetLimitsY() =>
+                new ScottPlot.CoordinateRange(-0.5, RUNTIME_MODE_HOT_WATER + 0.5);
+
+            public ScottPlot.AxisLimits GetLimits() =>
+                new(GetLimitsX().Min, GetLimitsX().Max, -0.5, RUNTIME_MODE_HOT_WATER + 0.5);
+
+            public int MinRenderIndex
+            {
+                get => _minRenderIndex;
+                set => _minRenderIndex = Math.Max(0, value);
+            }
+
+            public int MaxRenderIndex
+            {
+                get => _maxRenderIndex;
+                set => _maxRenderIndex = value;
+            }
+
+            private ScottPlot.Coordinates GetPoint(int index) =>
+                new(_times[index], _values[index]);
+
+            internal int FindNearestIndex(double x)
+            {
+                if (_times.Count == 0 || _values.Count == 0)
+                    return -1;
+
+                int low = Math.Max(0, _minRenderIndex);
+                int high = Math.Min(Math.Min(_times.Count, _values.Count) - 1, _maxRenderIndex);
+                if (high < low)
+                    return -1;
+                while (low <= high)
+                {
+                    int middle = low + (high - low) / 2;
+                    if (_times[middle] < x) low = middle + 1;
+                    else if (_times[middle] > x) high = middle - 1;
+                    else return middle;
+                }
+                if (low > high)
+                {
+                    // Clamp 的 min>max 会抛异常：x 越出窗口时夹回窗口边界点
+                    int min = Math.Max(0, _minRenderIndex);
+                    return high < min ? min : Math.Clamp(low, min, high);
+                }
+                return low;
+            }
+
+            private bool IsWithinDistance(
+                int index,
+                ScottPlot.Coordinates mouseCoordinates,
+                ScottPlot.RenderDetails renderDetails,
+                float maxDistance)
+            {
+                if (index < 0 || !double.IsFinite(renderDetails.PxPerUnitX)
+                    || !double.IsFinite(renderDetails.PxPerUnitY))
+                    return false;
+                ScottPlot.Coordinates point = GetPoint(index);
+                double dx = (point.X - mouseCoordinates.X) * renderDetails.PxPerUnitX;
+                double dy = (point.Y - mouseCoordinates.Y) * renderDetails.PxPerUnitY;
+                return Math.Sqrt(dx * dx + dy * dy) <= maxDistance;
+            }
+
+            private sealed class CoordinatesView : IReadOnlyList<ScottPlot.Coordinates>
+            {
+                private readonly EnumScatterSource _source;
+                internal CoordinatesView(EnumScatterSource source) => _source = source;
+                public int Count => Math.Min(_source._times.Count, _source._values.Count);
+                public ScottPlot.Coordinates this[int index] => _source.GetPoint(index);
+                public IEnumerator<ScottPlot.Coordinates> GetEnumerator()
+                {
+                    for (int i = 0; i < Count; i++) yield return _source.GetPoint(i);
+                }
+                System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+            }
+
+            internal string GetMeaning(ushort val) =>
+                _meanings.TryGetValue(val, out var m) ? m : val.ToString();
+        }
+
         private sealed class BitScatterSource : ScottPlot.IScatterSource
         {
             private readonly List<double> _times;
@@ -293,7 +422,12 @@ namespace W_TB_MS
                     else if (_times[middle] > x) high = middle - 1;
                     else return middle;
                 }
-                if (low > high) return Math.Clamp(low, Math.Max(0, _minRenderIndex), high);
+                if (low > high)
+                {
+                    // Clamp 的 min>max 会抛异常：x 越出窗口时夹回窗口边界点
+                    int min = Math.Max(0, _minRenderIndex);
+                    return high < min ? min : Math.Clamp(low, min, high);
+                }
                 return low;
             }
 
@@ -474,38 +608,28 @@ namespace W_TB_MS
                     [0] = new("生活热水模式-舒适", "节能", "舒适")
                 });
             // 虚拟状态曲线（无真实寄存器，轮询时由 DeriveModeRegisters 派生）：
-            // 30990 运行模式（30106 bit3~5+bit6）、30991 设置模式（40201+40202），按位画线。
-            AddStatusRegister(
+            // 30990 运行模式（30106 bit3~5+bit6），枚举 0~4，状态页作单条阶梯线。
+            // 用 bit=0 单条定义（不走 AddStatusRegister 的按位展开），文本含义统一取自 RuntimeModeMeanings。
+            definitions.Add(new(
                 RUNTIME_MODE_CURVE_ADDR,
+                0,
                 "运行模式",
-                new Dictionary<int, BitDefinition>
-                {
-                    [0] = new("运行模式-制冷", "停止", "制冷运行"),
-                    [1] = new("运行模式-制热", "停止", "制热运行"),
-                    [2] = new("运行模式-热水", "未运行", "热水运行")
-                });
-            AddStatusRegister(
-                SET_MODE_CURVE_ADDR,
-                "设置模式",
-                new Dictionary<int, BitDefinition>
-                {
-                    [0] = new("设置模式-制冷", "未设置", "制冷"),
-                    [1] = new("设置模式-制热", "未设置", "制热"),
-                    [2] = new("设置模式-热水", "未启用", "已启用")
-                });
+                "运行模式",
+                "数据缺失",
+                "运行中"));
 
             return definitions;
         }
 
         private static bool IsStatusCurve(BitCurveDefinition definition) =>
             definition.Address is 30106 or 30201 or 30229 or 40201 or 40202 or 40212
-                or RUNTIME_MODE_CURVE_ADDR or SET_MODE_CURVE_ADDR;
+                or RUNTIME_MODE_CURVE_ADDR;
 
         private static HashSet<ushort> CreateCurveSampleAddresses()
         {
-            // 虚拟模式寄存器（30990/30991）不参与设备轮询，采样地址集合需排除。
+            // 虚拟模式寄存器（30990）不参与设备轮询，采样地址集合需排除。
             var addresses = BitCurveRegisterAddresses
-                .Where(address => address != RUNTIME_MODE_CURVE_ADDR && address != SET_MODE_CURVE_ADDR)
+                .Where(address => address != RUNTIME_MODE_CURVE_ADDR)
                 .ToHashSet();
             foreach (NumericCurveDefinition definition in NumericCurveDefinitions)
             {
@@ -3077,10 +3201,24 @@ namespace W_TB_MS
             ScottPlot.WinForms.FormsPlot targetPlot = IsStatusCurve(definition)
                 ? stateFormsPlot
                 : bitFormsPlot;
-            var source = new BitScatterSource(
-                _timeData,
-                _allBitRegisterData[definition.Address],
-                definition.Bit);
+
+            ScottPlot.IScatterSource source;
+            if (definition.Address == RUNTIME_MODE_CURVE_ADDR)
+            {
+                // 运行模式：枚举阶梯线 (0~4)
+                source = new EnumScatterSource(
+                    _timeData,
+                    _allBitRegisterData[definition.Address],
+                    RuntimeModeMeanings);
+            }
+            else
+            {
+                // 其他状态曲线：按位画线
+                source = new BitScatterSource(
+                    _timeData,
+                    _allBitRegisterData[definition.Address],
+                    definition.Bit);
+            }
             var scatter = targetPlot.Plot.Add.Scatter(source);
             scatter.LegendText = definition.Name;
             scatter.MarkerSize = 0;
@@ -3095,7 +3233,14 @@ namespace W_TB_MS
             plot.Plot.Axes.AutoScale();
             if (xMax > xMin)
                 plot.Plot.Axes.SetLimitsX(xMin, xMax);
-            plot.Plot.Axes.SetLimitsY(-0.15, 1.15);
+            // 状态页含枚举曲线，Y 轴范围扩大到 -0.5~4.5；故障页仍用 0/1
+            // 状态页仅当运行模式枚举曲线可见时用 -0.5~5.5，否则 0/1 位曲线保持原有量程
+            if (plot == stateFormsPlot
+                && _bitCurvePlottables.TryGetValue((RUNTIME_MODE_CURVE_ADDR, 0), out var runtimeCurve)
+                && runtimeCurve.IsVisible)
+                plot.Plot.Axes.SetLimitsY(-0.5, RUNTIME_MODE_HOT_WATER + 0.5);
+            else
+                plot.Plot.Axes.SetLimitsY(-0.15, 1.15);
             plot.Refresh();
         }
 
@@ -3219,13 +3364,23 @@ namespace W_TB_MS
                 return;
             }
 
-            int value = selectedPoint.Y >= 0.5 ? 1 : 0;
-            string stateText = value == 1 ? selectedDefinition.OneText : selectedDefinition.ZeroText;
             string time = DateTime.FromOADate(_timeData[selectedPoint.Index]).ToString("HH:mm:ss.fff");
-            ShowCurveToolTip(
-                plot,
-                e,
-                $"时间：{time}\n{selectedDefinition.Name}：{value} / {stateText}");
+            string text;
+            // 仅运行模式虚拟曲线（枚举 0~5）走枚举文本分支；其余状态曲线仍按位解读
+            if (selectedDefinition.Address == RUNTIME_MODE_CURVE_ADDR
+                && plot == stateFormsPlot
+                && selectedPoint.Y is >= 0 and <= RUNTIME_MODE_HOT_WATER)
+            {
+                ushort val = (ushort)selectedPoint.Y;
+                text = $"时间：{time}\n运行模式：{val} / {(RuntimeModeMeanings.TryGetValue(val, out var m) ? m : val.ToString())}";
+            }
+            else
+            {
+                int value = selectedPoint.Y >= 0.5 ? 1 : 0;
+                string stateText = value == 1 ? selectedDefinition.OneText : selectedDefinition.ZeroText;
+                text = $"时间：{time}\n{selectedDefinition.Name}：{value} / {stateText}";
+            }
+            ShowCurveToolTip(plot, e, text);
         }
 
         private void ShowCurveToolTip(Control chartControl, MouseEventArgs e, string text)
@@ -3397,93 +3552,81 @@ namespace W_TB_MS
 
         private static string WorkModeMapGet(ushort m) => RegisterMap.WorkModeMap.TryGetValue(m, out var v) ? v : $"未知({m})";
 
-        // ---------------- 虚拟状态曲线：运行模式 / 设置模式 ----------------
-        // 这两个地址是软件内部编号，设备上无对应寄存器，不参与 Modbus 轮询，
+        // ---------------- 虚拟状态曲线：运行模式 ----------------
+        // 该地址是软件内部编号，设备上无对应寄存器，不参与 Modbus 轮询，
         // 仅在轮询结果分发时由真实寄存器派生（见 DeriveModeRegisters），用于状态页曲线与导出。
-        // 派生值按位掩码编码，便于状态页按位画线：bit0=制冷系，bit1=制热系，bit2=热水。
+        // 派生值为枚举：0=数据缺失/无运行，1=制冷运行，2=制冷+热水运行，3=制热运行，4=制热+热水运行，5=热水运行
         internal const ushort RUNTIME_MODE_CURVE_ADDR = 30990; // 运行模式（30106 bit3~5 + bit6 派生）
-        internal const ushort SET_MODE_CURVE_ADDR = 30991;     // 设置模式（40201 + 40202 派生）
 
-        internal const ushort MODE_BIT_COOLING = 0x0001; // 制冷（运行中 / 已设置）
-        internal const ushort MODE_BIT_HEATING = 0x0002; // 制热（运行中 / 已设置）
-        internal const ushort MODE_BIT_HOT_WATER = 0x0004; // 热水（运行中 / 已启用）
+        internal const ushort RUNTIME_MODE_DATA_MISSING = 0;
+        internal const ushort RUNTIME_MODE_COOLING = 1;             // 制冷运行
+        internal const ushort RUNTIME_MODE_COOLING_HOT_WATER = 2;   // 制冷+热水运行
+        internal const ushort RUNTIME_MODE_HEATING = 3;             // 制热运行
+        internal const ushort RUNTIME_MODE_HEATING_HOT_WATER = 4;   // 制热+热水运行
+        internal const ushort RUNTIME_MODE_HOT_WATER = 5;           // 热水运行（压缩机未运行，仅生活热水）
 
         internal static readonly Dictionary<ushort, string> RuntimeModeMeanings = new()
         {
-            [0] = "无",
-            [MODE_BIT_COOLING] = "制冷运行",
-            [MODE_BIT_HEATING] = "制热运行",
-            [MODE_BIT_COOLING | MODE_BIT_HOT_WATER] = "制冷+热水运行",
-            [MODE_BIT_HEATING | MODE_BIT_HOT_WATER] = "制热+热水运行",
-        };
-
-        internal static readonly Dictionary<ushort, string> SetModeMeanings = new()
-        {
-            [0] = "无",
-            [MODE_BIT_COOLING] = "制冷",
-            [MODE_BIT_HEATING] = "制热",
-            [MODE_BIT_COOLING | MODE_BIT_HOT_WATER] = "制冷+热水",
-            [MODE_BIT_HEATING | MODE_BIT_HOT_WATER] = "制热+热水",
+            [RUNTIME_MODE_DATA_MISSING] = "数据缺失",
+            [RUNTIME_MODE_COOLING] = "制冷运行",
+            [RUNTIME_MODE_COOLING_HOT_WATER] = "制冷+热水运行",
+            [RUNTIME_MODE_HEATING] = "制热运行",
+            [RUNTIME_MODE_HEATING_HOT_WATER] = "制热+热水运行",
+            [RUNTIME_MODE_HOT_WATER] = "热水运行",
         };
 
         /// <summary>
-        /// 由 30106 实际状态计算运行模式位掩码：bit3~5（0~2=制冷系，3~5=制热系）+ bit6（生活热水运行中）。
-        /// 30106 缺失或处于除霜/预热等无法判定取向的值时返回 0（无）。
+        /// 由 30106 实际状态计算运行模式枚举：bit3~5（0~2=制冷系，3~5=制热系）+ bit6（生活热水运行中）。
+        /// bit3~5 无取向（待机/除霜/预热）但 bit6=1 → 5（热水运行）；
+        /// 30106 缺失或完全无有效运行状态时返回 0（数据缺失）。
         /// </summary>
-        internal static ushort ComputeRuntimeModeBits(IReadOnlyDictionary<ushort, ushort> values)
+        internal static ushort ComputeRuntimeModeEnum(IReadOnlyDictionary<ushort, ushort> values)
         {
             if (!values.TryGetValue(RegisterMap.STATUS_WORD_ADDR, out ushort status))
-                return 0;
+                return RUNTIME_MODE_DATA_MISSING;
 
-            ushort bits = ((status >> 3) & 0x07) switch
+            ushort? baseMode = ((status >> 3) & 0x07) switch
             {
-                0 or 1 or 2 => MODE_BIT_COOLING,
-                3 or 4 or 5 => MODE_BIT_HEATING,
-                _ => 0 // 6=除霜中 / 7=压缩机预热：无明确制冷制热取向
+                0 or 1 or 2 => RUNTIME_MODE_COOLING,
+                3 or 4 or 5 => RUNTIME_MODE_HEATING,
+                _ => null // 6=除霜中 / 7=压缩机预热：无明确制冷制热取向
             };
 
-            if ((status & 0x0040) != 0) // bit6 生活热水运行状态
-                bits |= MODE_BIT_HOT_WATER;
-            return bits;
+            bool hotWater = (status & 0x0040) != 0; // bit6 生活热水运行状态
+
+            if (baseMode == null)
+                return hotWater ? RUNTIME_MODE_HOT_WATER : RUNTIME_MODE_DATA_MISSING;
+
+            return (ushort)(baseMode + (hotWater ? 1 : 0));
         }
 
-        /// <summary>
-        /// 由 40201（工作模式设置：1=制冷，2=制热）与 40202（生活热水启用）计算设置模式位掩码。
-        /// 工作模式未知或寄存器缺失时返回 0（无），热水位仅在制冷/制热可判定时才有效。
-        /// </summary>
-        internal static ushort ComputeSetModeBits(IReadOnlyDictionary<ushort, ushort> values)
-        {
-            if (!values.TryGetValue(RegisterMap.SET_WORK_MODE_ADDR, out ushort mode) ||
-                !values.TryGetValue(RegisterMap.HOT_WATER_ENABLE_ADDR, out ushort hotWaterRaw))
-                return 0;
-
-            ushort bits = mode switch
-            {
-                1 => MODE_BIT_COOLING,
-                2 => MODE_BIT_HEATING,
-                _ => 0
-            };
-
-            if (bits == 0) // 工作模式未知：仅热水无法构成有效模式
-                return 0;
-
-            if (hotWaterRaw != 0)
-                bits |= MODE_BIT_HOT_WATER;
-            return bits;
-        }
-
-        /// <summary>轮询后向 values 注入虚拟模式寄存器（30990/30991），供状态页曲线与导出使用。</summary>
+        /// <summary>轮询后向 values 注入虚拟模式寄存器（30990），供状态页曲线与导出使用。</summary>
         internal static void DeriveModeRegisters(Dictionary<ushort, ushort> values)
         {
-            values[RUNTIME_MODE_CURVE_ADDR] = ComputeRuntimeModeBits(values);
-            values[SET_MODE_CURVE_ADDR] = ComputeSetModeBits(values);
+            values[RUNTIME_MODE_CURVE_ADDR] = ComputeRuntimeModeEnum(values);
         }
 
         private static string RuntimeModeText(IReadOnlyDictionary<ushort, ushort> values) =>
-            RuntimeModeMeanings.TryGetValue(ComputeRuntimeModeBits(values), out var runtimeText) ? runtimeText : "数据缺失";
+            RuntimeModeMeanings.TryGetValue(ComputeRuntimeModeEnum(values), out var runtimeText) ? runtimeText : "数据缺失";
 
-        private static string SetModeText(IReadOnlyDictionary<ushort, ushort> values) =>
-            SetModeMeanings.TryGetValue(ComputeSetModeBits(values), out var setText) ? setText : "数据缺失";
+        /// <summary>顶部状态栏"设置模式"文本：由 40201（1=制冷，2=制热）与 40202（生活热水启用）组合。</summary>
+        private static string SetModeText(IReadOnlyDictionary<ushort, ushort> values)
+        {
+            if (!values.TryGetValue(RegisterMap.SET_WORK_MODE_ADDR, out ushort mode) ||
+                !values.TryGetValue(RegisterMap.HOT_WATER_ENABLE_ADDR, out ushort hotWaterRaw))
+                return "数据缺失";
+
+            string baseMode = mode switch
+            {
+                1 => "制冷",
+                2 => "制热",
+                _ => "数据缺失"
+            };
+            if (baseMode == "数据缺失")
+                return baseMode;
+
+            return hotWaterRaw != 0 ? $"{baseMode}+热水" : baseMode;
+        }
 
         private static string SilentMapGet(ushort m) => RegisterMap.SilentModeMap.TryGetValue(m, out var v) ? v : $"未知({m})";
 
