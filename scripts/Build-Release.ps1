@@ -108,4 +108,11 @@ Move-Item -LiteralPath $builtSetup -Destination $setupPath -Force
 
 Remove-Item -LiteralPath $stagingRoot -Recurse -Force
 
+# 5. 打包成功后清理 payload 中间产物（约 1.4 GB，Setup.exe 已嵌入无需保留）
+foreach ($payloadPath in $payloadPaths.Values) {
+    if (Test-Path -LiteralPath $payloadPath) {
+        Remove-Item -LiteralPath $payloadPath -Force
+    }
+}
+
 Write-Host "安装包: $setupPath"

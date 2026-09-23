@@ -98,7 +98,7 @@ public class RegisterMapTests
             new ushort[] { 30101, 30102, 30103, 30104, 30105 },
             MainForm.FaultCurveAddresses);
         Assert.Equal(
-            new ushort[] { 30106, 30201, 30229, 40201, 40202, 40212, 30990 },
+            new ushort[] { 30106, 30201, 30229, 40201, 40202, 40212, 30990, 30991 },
             MainForm.StatusCurveAddresses);
         Assert.Empty(MainForm.FaultCurveAddresses.Intersect(MainForm.StatusCurveAddresses));
     }
@@ -126,37 +126,65 @@ public class RegisterMapTests
     [Fact]
     public void ComputeRuntimeModeEnum_MapsStatusWordCorrectly()
     {
-        // 30106 bit3~5=0（制冷系）、bit6=0 → 1=制冷运行
-        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE_COOLING, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b0000 }));
-        // bit3~5=1（制冷待机）+ bit6=1 → 2=制冷+热水运行
-        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE_COOLING_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b0100_1000 }));
-        // bit3~5=3（制热系）、bit6=0 → 3=制热运行
-        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE_HEATING, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b1_1000 }));
-        // bit3~5=3 + bit6=1 → 4=制热+热水运行
-        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE_HEATING_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b0101_1000 }));
-        // bit3~5=6（除霜中）+ bit6=1 → 5=热水运行（0b111_0000 = 除霜位 + 热水位）
-        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b111_0000 }));
-        // bit3~5=6（除霜中）→ 0=数据缺失
-        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE_DATA_MISSING, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b11_0000 }));
+        // 运行模式1：30106 bit3~5
+        // bit3~5=000 → 7=--
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE1_NONE, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b0000 }));
+        // bit3~5=001 → 1=制冷待机
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE1_COOLING_STANDBY, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b00_1000 }));
+        // bit3~5=010 → 2=制冷报警停机
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE1_COOLING_ALARM_STOP, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b01_0000 }));
+        // bit3~5=011 → 7=--
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE1_NONE, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b01_1000 }));
+        // bit3~5=100 → 3=制热待机
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE1_HEATING_STANDBY, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b10_0000 }));
+        // bit3~5=101 → 4=制热报警停机
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE1_HEATING_ALARM_STOP, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b10_1000 }));
+        // bit3~5=110 → 5=除霜中
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE1_DEFROSTING, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b11_0000 }));
+        // bit3~5=111 → 6=压缩机预热
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE1_PREHEATING, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort> { [30106] = 0b11_1000 }));
         // 30106 缺失 → 0
         Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE_DATA_MISSING, W_TB_MS.MainForm.ComputeRuntimeModeEnum(new Dictionary<ushort, ushort>()));
     }
 
     [Fact]
+    public void ComputeRuntimeMode2Enum_MapsStatusWordCorrectly()
+    {
+        // 运行模式2：30106 bit3~5 + bit6
+        // bit3~5=000 + bit6=0 → 1=制冷
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_COOLING, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b0000 }));
+        // bit3~5=000 + bit6=1 → 2=制冷+热水
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_COOLING_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b100_0000 }));
+        // bit3~5=011 + bit6=0 → 3=制热
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_HEATING, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b01_1000 }));
+        // bit3~5=011 + bit6=1 → 4=制热+热水
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_HEATING_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b101_1000 }));
+        // bit3~5=110（除霜）+ bit6=1 → 5=热水
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b111_0000 }));
+        // bit3~5=111（预热）+ bit6=0 → 6=压机未运行
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_COMPRESSOR_OFF, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b11_1000 }));
+        // 30106 缺失 → 0
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE_DATA_MISSING, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort>()));
+    }
+
+    [Fact]
     public void RuntimeModeMeanings_CoversAllEnumValues()
     {
-        Assert.Equal(new ushort[] { 0, 1, 2, 3, 4, 5 }, W_TB_MS.MainForm.RuntimeModeMeanings.Keys.Order().ToArray());
+        Assert.Equal(new ushort[] { 0, 1, 2, 3, 4, 5, 6, 7 }, W_TB_MS.MainForm.RuntimeModeMeanings.Keys.Order().ToArray());
+        Assert.Equal(new ushort[] { 0, 1, 2, 3, 4, 5, 6 }, W_TB_MS.MainForm.RuntimeMode2Meanings.Keys.Order().ToArray());
     }
 
     [Fact]
     public void DeriveModeRegisters_InjectsRuntimeModeVirtualAddress()
     {
-        var values = new Dictionary<ushort, ushort> { [30106] = 0b0101_1000 };
+        var values = new Dictionary<ushort, ushort> { [30106] = (0b101 << 3) | 0x40 };
 
         W_TB_MS.MainForm.DeriveModeRegisters(values);
 
-        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE_HEATING_HOT_WATER, values[W_TB_MS.MainForm.RUNTIME_MODE_CURVE_ADDR]);
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE1_HEATING_ALARM_STOP, values[W_TB_MS.MainForm.RUNTIME_MODE_CURVE_ADDR]);
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_HOT_WATER, values[W_TB_MS.MainForm.RUNTIME_MODE2_CURVE_ADDR]);
         // 虚拟地址不得进入轮询采样地址集合
         Assert.DoesNotContain(W_TB_MS.MainForm.RUNTIME_MODE_CURVE_ADDR, W_TB_MS.MainForm.RequiredCurveSampleAddresses);
+        Assert.DoesNotContain(W_TB_MS.MainForm.RUNTIME_MODE2_CURVE_ADDR, W_TB_MS.MainForm.RequiredCurveSampleAddresses);
     }
 }

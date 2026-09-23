@@ -122,6 +122,7 @@ namespace W_TB_MS
         private ListBox lstFaults = null!;
         private Label lblWorkMode = null!;
         private Label lblRuntimeMode = null!;
+        private Label lblRuntimeMode2 = null!;
         private Label lblSetMode = null!;
         private string _lastFaultSignature = string.Empty;
         private int _lastFaultCount = -1;
@@ -215,12 +216,14 @@ namespace W_TB_MS
             private int _minRenderIndex;
             private int _maxRenderIndex = int.MaxValue;
             private readonly Dictionary<ushort, string> _meanings;
+            private readonly double _maxY;
 
-            internal EnumScatterSource(List<double> times, List<ushort> values, Dictionary<ushort, string> meanings)
+            internal EnumScatterSource(List<double> times, List<ushort> values, Dictionary<ushort, string> meanings, double maxY)
             {
                 _times = times;
                 _values = values;
                 _meanings = meanings;
+                _maxY = maxY;
                 _points = new CoordinatesView(this);
             }
 
@@ -258,10 +261,10 @@ namespace W_TB_MS
                     : new ScottPlot.CoordinateRange(_times[0], _times[^1]);
 
             public ScottPlot.CoordinateRange GetLimitsY() =>
-                new ScottPlot.CoordinateRange(-0.5, RUNTIME_MODE_HOT_WATER + 0.5);
+                new ScottPlot.CoordinateRange(-0.5, _maxY + 0.5);
 
             public ScottPlot.AxisLimits GetLimits() =>
-                new(GetLimitsX().Min, GetLimitsX().Max, -0.5, RUNTIME_MODE_HOT_WATER + 0.5);
+                new(GetLimitsX().Min, GetLimitsX().Max, -0.5, _maxY + 0.5);
 
             public int MinRenderIndex
             {
@@ -608,13 +611,20 @@ namespace W_TB_MS
                     [0] = new("生活热水模式-舒适", "节能", "舒适")
                 });
             // 虚拟状态曲线（无真实寄存器，轮询时由 DeriveModeRegisters 派生）：
-            // 30990 运行模式（30106 bit3~5+bit6），枚举 0~4，状态页作单条阶梯线。
-            // 用 bit=0 单条定义（不走 AddStatusRegister 的按位展开），文本含义统一取自 RuntimeModeMeanings。
+            // 30990 运行模式1（30106 bit3~5），30991 运行模式2（30106 bit3~5+bit6），状态页作单条阶梯线。
+            // 用 bit=0 单条定义（不走 AddStatusRegister 的按位展开），文本含义分别取自 RuntimeMode(2)Meanings。
             definitions.Add(new(
                 RUNTIME_MODE_CURVE_ADDR,
                 0,
-                "运行模式",
-                "运行模式",
+                "运行模式1",
+                "运行模式1",
+                "数据缺失",
+                "运行中"));
+            definitions.Add(new(
+                RUNTIME_MODE2_CURVE_ADDR,
+                0,
+                "运行模式2",
+                "运行模式2",
                 "数据缺失",
                 "运行中"));
 
@@ -623,13 +633,13 @@ namespace W_TB_MS
 
         private static bool IsStatusCurve(BitCurveDefinition definition) =>
             definition.Address is 30106 or 30201 or 30229 or 40201 or 40202 or 40212
-                or RUNTIME_MODE_CURVE_ADDR;
+                or RUNTIME_MODE_CURVE_ADDR or RUNTIME_MODE2_CURVE_ADDR;
 
         private static HashSet<ushort> CreateCurveSampleAddresses()
         {
-            // 虚拟模式寄存器（30990）不参与设备轮询，采样地址集合需排除。
+            // 虚拟模式寄存器（30990/30991）不参与设备轮询，采样地址集合需排除。
             var addresses = BitCurveRegisterAddresses
-                .Where(address => address != RUNTIME_MODE_CURVE_ADDR)
+                .Where(address => address != RUNTIME_MODE_CURVE_ADDR && address != RUNTIME_MODE2_CURVE_ADDR)
                 .ToHashSet();
             foreach (NumericCurveDefinition definition in NumericCurveDefinitions)
             {
@@ -796,7 +806,8 @@ namespace W_TB_MS
 
             lblStatus = new Label { Text = "未连接", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(0, 4, 18, 0) };
             lblWorkMode = new Label { Text = "工作状态: --", AutoSize = true, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold), Margin = new Padding(0, 4, 18, 0) };
-            lblRuntimeMode = new Label { Text = "运行模式: --", AutoSize = true, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold), ForeColor = Color.Red, Margin = new Padding(0, 4, 18, 0) };
+            lblRuntimeMode = new Label { Text = "运行模式1: --", AutoSize = true, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold), ForeColor = Color.Red, Margin = new Padding(0, 4, 18, 0) };
+            lblRuntimeMode2 = new Label { Text = "运行模式2: --", AutoSize = true, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold), ForeColor = Color.Red, Margin = new Padding(0, 4, 18, 0) };
             lblSetMode = new Label { Text = "设置模式: --", AutoSize = true, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold), ForeColor = Color.Black, Margin = new Padding(0, 4, 18, 0) };
             lblFaultCode = new Label { Text = "故障汇总: 等待读取", AutoSize = true, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold), ForeColor = Color.Gray, Margin = new Padding(0, 4, 18, 0) };
             lblUpdateTime = new Label { Text = "", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(0, 4, 0, 0) };
@@ -811,7 +822,7 @@ namespace W_TB_MS
             };
             connectionSummary.Controls.AddRange(new Control[]
             {
-                lblStatus, lblWorkMode, lblRuntimeMode, lblSetMode, lblFaultCode, lblUpdateTime
+                lblStatus, lblWorkMode, lblRuntimeMode, lblRuntimeMode2, lblSetMode, lblFaultCode, lblUpdateTime
             });
 
             panelTop.Controls.AddRange(new Control[] {
@@ -2718,13 +2729,15 @@ namespace W_TB_MS
                     ? (defrostRequested || defrostRunning ? "是" : "否")
                     : "数据缺失";
                 SetLabelText(lblWorkMode, $"工作状态: 电源 {(isOn ? "开机" : "关机")} | 静音 {silentText} | 除霜 {defrostText}");
-                SetLabelText(lblRuntimeMode, $"运行模式: {RuntimeModeText(values)}", Color.Red);
+                SetLabelText(lblRuntimeMode, $"运行模式1: {RuntimeModeText(values)}", Color.Red);
+                SetLabelText(lblRuntimeMode2, $"运行模式2: {RuntimeMode2Text(values)}", Color.Red);
                 SetLabelText(lblSetMode, $"设置模式: {SetModeText(values)}", Color.Black);
             }
             else
             {
                 SetLabelText(lblWorkMode, "工作状态: 数据不完整");
-                SetLabelText(lblRuntimeMode, "运行模式: --", Color.Red);
+                SetLabelText(lblRuntimeMode, "运行模式1: --", Color.Red);
+                SetLabelText(lblRuntimeMode2, "运行模式2: --", Color.Red);
                 SetLabelText(lblSetMode, "设置模式: --", Color.Black);
             }
 
@@ -3205,11 +3218,21 @@ namespace W_TB_MS
             ScottPlot.IScatterSource source;
             if (definition.Address == RUNTIME_MODE_CURVE_ADDR)
             {
-                // 运行模式：枚举阶梯线 (0~4)
+                // 运行模式1：枚举阶梯线 (0~7)
                 source = new EnumScatterSource(
                     _timeData,
                     _allBitRegisterData[definition.Address],
-                    RuntimeModeMeanings);
+                    RuntimeModeMeanings,
+                    RUNTIME_MODE1_NONE);
+            }
+            else if (definition.Address == RUNTIME_MODE2_CURVE_ADDR)
+            {
+                // 运行模式2：枚举阶梯线 (0~6)
+                source = new EnumScatterSource(
+                    _timeData,
+                    _allBitRegisterData[definition.Address],
+                    RuntimeMode2Meanings,
+                    RUNTIME_MODE2_COMPRESSOR_OFF);
             }
             else
             {
@@ -3233,12 +3256,19 @@ namespace W_TB_MS
             plot.Plot.Axes.AutoScale();
             if (xMax > xMin)
                 plot.Plot.Axes.SetLimitsX(xMin, xMax);
-            // 状态页含枚举曲线，Y 轴范围扩大到 -0.5~4.5；故障页仍用 0/1
-            // 状态页仅当运行模式枚举曲线可见时用 -0.5~5.5，否则 0/1 位曲线保持原有量程
-            if (plot == stateFormsPlot
-                && _bitCurvePlottables.TryGetValue((RUNTIME_MODE_CURVE_ADDR, 0), out var runtimeCurve)
-                && runtimeCurve.IsVisible)
-                plot.Plot.Axes.SetLimitsY(-0.5, RUNTIME_MODE_HOT_WATER + 0.5);
+            // 状态页含枚举曲线，Y 轴范围按可见的运行模式1/2枚举曲线量程取最大；故障页仍用 0/1
+            double enumMaxY = -1;
+            if (plot == stateFormsPlot)
+            {
+                if (_bitCurvePlottables.TryGetValue((RUNTIME_MODE_CURVE_ADDR, 0), out var runtimeCurve1)
+                    && runtimeCurve1.IsVisible)
+                    enumMaxY = Math.Max(enumMaxY, RUNTIME_MODE1_NONE);
+                if (_bitCurvePlottables.TryGetValue((RUNTIME_MODE2_CURVE_ADDR, 0), out var runtimeCurve2)
+                    && runtimeCurve2.IsVisible)
+                    enumMaxY = Math.Max(enumMaxY, RUNTIME_MODE2_COMPRESSOR_OFF);
+            }
+            if (enumMaxY >= 0)
+                plot.Plot.Axes.SetLimitsY(-0.5, enumMaxY + 0.5);
             else
                 plot.Plot.Axes.SetLimitsY(-0.15, 1.15);
             plot.Refresh();
@@ -3366,13 +3396,19 @@ namespace W_TB_MS
 
             string time = DateTime.FromOADate(_timeData[selectedPoint.Index]).ToString("HH:mm:ss.fff");
             string text;
-            // 仅运行模式虚拟曲线（枚举 0~5）走枚举文本分支；其余状态曲线仍按位解读
-            if (selectedDefinition.Address == RUNTIME_MODE_CURVE_ADDR
-                && plot == stateFormsPlot
-                && selectedPoint.Y is >= 0 and <= RUNTIME_MODE_HOT_WATER)
+            // 运行模式1/2虚拟曲线（枚举阶梯线）走枚举文本分支；其余状态曲线仍按位解读
+            if (plot == stateFormsPlot
+                && selectedDefinition.Address is RUNTIME_MODE_CURVE_ADDR or RUNTIME_MODE2_CURVE_ADDR
+                && selectedPoint.Y is >= 0 and <= 7)
             {
                 ushort val = (ushort)selectedPoint.Y;
-                text = $"时间：{time}\n运行模式：{val} / {(RuntimeModeMeanings.TryGetValue(val, out var m) ? m : val.ToString())}";
+                var meanings = selectedDefinition.Address == RUNTIME_MODE_CURVE_ADDR
+                    ? RuntimeModeMeanings
+                    : RuntimeMode2Meanings;
+                string modeName = selectedDefinition.Address == RUNTIME_MODE_CURVE_ADDR
+                    ? "运行模式1"
+                    : "运行模式2";
+                text = $"时间：{time}\n{modeName}：{val} / {(meanings.TryGetValue(val, out var m) ? m : val.ToString())}";
             }
             else
             {
@@ -3552,69 +3588,130 @@ namespace W_TB_MS
 
         private static string WorkModeMapGet(ushort m) => RegisterMap.WorkModeMap.TryGetValue(m, out var v) ? v : $"未知({m})";
 
-        // ---------------- 虚拟状态曲线：运行模式 ----------------
-        // 该地址是软件内部编号，设备上无对应寄存器，不参与 Modbus 轮询，
+        // ---------------- 虚拟状态曲线：运行模式1 / 运行模式2 ----------------
+        // 这两个地址是软件内部编号，设备上无对应寄存器，不参与 Modbus 轮询，
         // 仅在轮询结果分发时由真实寄存器派生（见 DeriveModeRegisters），用于状态页曲线与导出。
-        // 派生值为枚举：0=数据缺失/无运行，1=制冷运行，2=制冷+热水运行，3=制热运行，4=制热+热水运行，5=热水运行
-        internal const ushort RUNTIME_MODE_CURVE_ADDR = 30990; // 运行模式（30106 bit3~5 + bit6 派生）
+        // 运行模式1（30990）由 30106 bit3~5 派生，枚举：0=数据缺失，1=制冷待机，2=制冷报警停机，
+        // 3=制热待机，4=制热报警停机，5=除霜中，6=压缩机预热，7=--
+        // 运行模式2（30991）由 30106 bit3~5 + bit6 派生，枚举：0=数据缺失，1=制冷，2=制冷+热水，
+        // 3=制热，4=制热+热水，5=热水，6=压机未运行
+        internal const ushort RUNTIME_MODE_CURVE_ADDR = 30990;   // 运行模式1（30106 bit3~5 派生）
+        internal const ushort RUNTIME_MODE2_CURVE_ADDR = 30991;  // 运行模式2（30106 bit3~5 + bit6 派生）
 
+        // ---- 运行模式1 枚举 ----
         internal const ushort RUNTIME_MODE_DATA_MISSING = 0;
-        internal const ushort RUNTIME_MODE_COOLING = 1;             // 制冷运行
-        internal const ushort RUNTIME_MODE_COOLING_HOT_WATER = 2;   // 制冷+热水运行
-        internal const ushort RUNTIME_MODE_HEATING = 3;             // 制热运行
-        internal const ushort RUNTIME_MODE_HEATING_HOT_WATER = 4;   // 制热+热水运行
-        internal const ushort RUNTIME_MODE_HOT_WATER = 5;           // 热水运行（压缩机未运行，仅生活热水）
+        internal const ushort RUNTIME_MODE1_COOLING_STANDBY = 1;        // 制冷待机
+        internal const ushort RUNTIME_MODE1_COOLING_ALARM_STOP = 2;     // 制冷报警停机
+        internal const ushort RUNTIME_MODE1_HEATING_STANDBY = 3;        // 制热待机
+        internal const ushort RUNTIME_MODE1_HEATING_ALARM_STOP = 4;     // 制热报警停机
+        internal const ushort RUNTIME_MODE1_DEFROSTING = 5;             // 除霜中
+        internal const ushort RUNTIME_MODE1_PREHEATING = 6;             // 压缩机预热
+        internal const ushort RUNTIME_MODE1_NONE = 7;                   // --（000B / 011B）
+
+        // ---- 运行模式2 枚举 ----
+        internal const ushort RUNTIME_MODE2_COOLING = 1;                // 制冷
+        internal const ushort RUNTIME_MODE2_COOLING_HOT_WATER = 2;      // 制冷+热水
+        internal const ushort RUNTIME_MODE2_HEATING = 3;                // 制热
+        internal const ushort RUNTIME_MODE2_HEATING_HOT_WATER = 4;      // 制热+热水
+        internal const ushort RUNTIME_MODE2_HOT_WATER = 5;              // 热水
+        internal const ushort RUNTIME_MODE2_COMPRESSOR_OFF = 6;         // 压机未运行
 
         internal static readonly Dictionary<ushort, string> RuntimeModeMeanings = new()
         {
             [RUNTIME_MODE_DATA_MISSING] = "数据缺失",
-            [RUNTIME_MODE_COOLING] = "制冷运行",
-            [RUNTIME_MODE_COOLING_HOT_WATER] = "制冷+热水运行",
-            [RUNTIME_MODE_HEATING] = "制热运行",
-            [RUNTIME_MODE_HEATING_HOT_WATER] = "制热+热水运行",
-            [RUNTIME_MODE_HOT_WATER] = "热水运行",
+            [RUNTIME_MODE1_COOLING_STANDBY] = "制冷待机",
+            [RUNTIME_MODE1_COOLING_ALARM_STOP] = "制冷报警停机",
+            [RUNTIME_MODE1_HEATING_STANDBY] = "制热待机",
+            [RUNTIME_MODE1_HEATING_ALARM_STOP] = "制热报警停机",
+            [RUNTIME_MODE1_DEFROSTING] = "除霜中",
+            [RUNTIME_MODE1_PREHEATING] = "压缩机预热",
+            [RUNTIME_MODE1_NONE] = " -- ",
+        };
+
+        internal static readonly Dictionary<ushort, string> RuntimeMode2Meanings = new()
+        {
+            [RUNTIME_MODE_DATA_MISSING] = "数据缺失",
+            [RUNTIME_MODE2_COOLING] = "制冷",
+            [RUNTIME_MODE2_COOLING_HOT_WATER] = "制冷+热水",
+            [RUNTIME_MODE2_HEATING] = "制热",
+            [RUNTIME_MODE2_HEATING_HOT_WATER] = "制热+热水",
+            [RUNTIME_MODE2_HOT_WATER] = "热水",
+            [RUNTIME_MODE2_COMPRESSOR_OFF] = "压机未运行",
         };
 
         /// <summary>
-        /// 由 30106 实际状态计算运行模式枚举：bit3~5（0~2=制冷系，3~5=制热系）+ bit6（生活热水运行中）。
-        /// bit3~5 无取向（待机/除霜/预热）但 bit6=1 → 5（热水运行）；
-        /// 30106 缺失或完全无有效运行状态时返回 0（数据缺失）。
+        /// 由 30106 实际状态计算运行模式1枚举：bit3~5（001=制冷待机，010=制冷报警停机，
+        /// 100=制热待机，101=制热报警停机，110=除霜中，111=压缩机预热，000/011=--）。
+        /// 30106 缺失时返回 0（数据缺失）。
         /// </summary>
         internal static ushort ComputeRuntimeModeEnum(IReadOnlyDictionary<ushort, ushort> values)
         {
             if (!values.TryGetValue(RegisterMap.STATUS_WORD_ADDR, out ushort status))
                 return RUNTIME_MODE_DATA_MISSING;
 
-            ushort? baseMode = ((status >> 3) & 0x07) switch
+            return ((status >> 3) & 0x07) switch
             {
-                0 or 1 or 2 => RUNTIME_MODE_COOLING,
-                3 or 4 or 5 => RUNTIME_MODE_HEATING,
-                _ => null // 6=除霜中 / 7=压缩机预热：无明确制冷制热取向
+                0b001 => RUNTIME_MODE1_COOLING_STANDBY,
+                0b010 => RUNTIME_MODE1_COOLING_ALARM_STOP,
+                0b100 => RUNTIME_MODE1_HEATING_STANDBY,
+                0b101 => RUNTIME_MODE1_HEATING_ALARM_STOP,
+                0b110 => RUNTIME_MODE1_DEFROSTING,
+                0b111 => RUNTIME_MODE1_PREHEATING,
+                _ => RUNTIME_MODE1_NONE // 000B / 011B
             };
-
-            bool hotWater = (status & 0x0040) != 0; // bit6 生活热水运行状态
-
-            if (baseMode == null)
-                return hotWater ? RUNTIME_MODE_HOT_WATER : RUNTIME_MODE_DATA_MISSING;
-
-            return (ushort)(baseMode + (hotWater ? 1 : 0));
         }
 
-        /// <summary>轮询后向 values 注入虚拟模式寄存器（30990），供状态页曲线与导出使用。</summary>
+        /// <summary>
+        /// 由 30106 实际状态计算运行模式2枚举：bit3~5 与 bit6 组合。
+        /// 000+bit6=0→制冷；000+bit6=1→制冷+热水；011+bit6=0→制热；011+bit6=1→制热+热水；
+        /// 其他 bit3~5+bit6=1→热水；其他 bit3~5+bit6=0→压机未运行。30106 缺失时返回 0（数据缺失）。
+        /// </summary>
+        internal static ushort ComputeRuntimeMode2Enum(IReadOnlyDictionary<ushort, ushort> values)
+        {
+            if (!values.TryGetValue(RegisterMap.STATUS_WORD_ADDR, out ushort status))
+                return RUNTIME_MODE_DATA_MISSING;
+
+            ushort baseBits = (ushort)((status >> 3) & 0x07);
+            bool hotWater = (status & 0x0040) != 0; // bit6 生活热水运行状态
+
+            return (baseBits, hotWater) switch
+            {
+                (0b000, false) => RUNTIME_MODE2_COOLING,
+                (0b000, true) => RUNTIME_MODE2_COOLING_HOT_WATER,
+                (0b011, false) => RUNTIME_MODE2_HEATING,
+                (0b011, true) => RUNTIME_MODE2_HEATING_HOT_WATER,
+                (_, true) => RUNTIME_MODE2_HOT_WATER,
+                _ => RUNTIME_MODE2_COMPRESSOR_OFF
+            };
+        }
+
+        /// <summary>轮询后向 values 注入虚拟模式寄存器（30990/30991），供状态页曲线与导出使用。</summary>
         internal static void DeriveModeRegisters(Dictionary<ushort, ushort> values)
         {
             values[RUNTIME_MODE_CURVE_ADDR] = ComputeRuntimeModeEnum(values);
+            values[RUNTIME_MODE2_CURVE_ADDR] = ComputeRuntimeMode2Enum(values);
         }
 
         private static string RuntimeModeText(IReadOnlyDictionary<ushort, ushort> values) =>
             RuntimeModeMeanings.TryGetValue(ComputeRuntimeModeEnum(values), out var runtimeText) ? runtimeText : "数据缺失";
 
-        /// <summary>顶部状态栏"设置模式"文本：由 40201（1=制冷，2=制热）与 40202（生活热水启用）组合。</summary>
+        private static string RuntimeMode2Text(IReadOnlyDictionary<ushort, ushort> values) =>
+            RuntimeMode2Meanings.TryGetValue(ComputeRuntimeMode2Enum(values), out var runtimeText) ? runtimeText : "数据缺失";
+
+        /// <summary>
+        /// 顶部状态栏"设置模式"文本：由 40001（开关机）、40201（1=制冷，2=制热）与 40202（生活热水启用）组合。
+        /// 40001=0 时不判断 40201，不显示制冷/制热；40002=0 时不显示"热水"。
+        /// </summary>
         private static string SetModeText(IReadOnlyDictionary<ushort, ushort> values)
         {
-            if (!values.TryGetValue(RegisterMap.SET_WORK_MODE_ADDR, out ushort mode) ||
+            if (!values.TryGetValue(RegisterMap.ON_OFF_ADDR, out ushort onOff) ||
+                !values.TryGetValue(RegisterMap.SET_WORK_MODE_ADDR, out ushort mode) ||
                 !values.TryGetValue(RegisterMap.HOT_WATER_ENABLE_ADDR, out ushort hotWaterRaw))
                 return "数据缺失";
+
+            // 40001=0：不判断 40201，不显示制冷/制热
+            if (onOff == 0)
+                return "关机";
 
             string baseMode = mode switch
             {

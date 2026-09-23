@@ -11,7 +11,7 @@ public class EnumScatterSourceTests
 {
     private static W_TB_MS.MainForm.EnumScatterSource CreateSource(
         List<double> times, List<ushort> values) =>
-        new(times, values, W_TB_MS.MainForm.RuntimeModeMeanings);
+        new(times, values, W_TB_MS.MainForm.RuntimeModeMeanings, W_TB_MS.MainForm.RUNTIME_MODE1_NONE);
 
     [Fact]
     public void FindNearestIndex_DoesNotThrow_WhenMouseBeforeFirstPoint()
@@ -78,7 +78,7 @@ public class EnumScatterSourceTests
     {
         var source = CreateSource(new List<double> { 100 }, new List<ushort> { 5 });
 
-        Assert.Equal("热水运行", source.GetMeaning(5));
+        Assert.Equal("除霜中", source.GetMeaning(5));
         Assert.Equal("99", source.GetMeaning(99));
     }
 }
