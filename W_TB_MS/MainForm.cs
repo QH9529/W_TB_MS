@@ -55,6 +55,9 @@ namespace W_TB_MS
         private ScottPlot.WinForms.FormsPlot bitFormsPlot = null!;
         private ScottPlot.WinForms.FormsPlot stateFormsPlot = null!;
         private TabControl chartTabs = null!;
+        private TreeView numericSelector = null!;
+        private TreeView bitSelector = null!;
+        private TreeView stateSelector = null!;
         private readonly Dictionary<ushort, ScottPlot.IPlottable> _numericCurvePlottables = new();
         private readonly Dictionary<ushort, List<double>> _numericCurveData = new();
         private readonly Dictionary<(ushort Address, int Bit), ScottPlot.IPlottable> _bitCurvePlottables = new();
@@ -547,6 +550,19 @@ namespace W_TB_MS
 
         internal static int StoredBitRegisterCount => BitCurveRegisterAddresses.Count;
         internal static int StoredBitCurveCount => BitCurveDefinitions.Count;
+
+        /// <summary>
+        /// 同步切换三个页面的曲线选择树显示状态：
+        /// 以第一个树当前是否可见取反，三者统一显示或隐藏。返回切换后是否可见。
+        /// </summary>
+        internal static bool ApplyTreeSelectorToggle(TreeView first, TreeView second, TreeView third)
+        {
+            bool show = !first.Visible;
+            first.Visible = show;
+            second.Visible = show;
+            third.Visible = show;
+            return show;
+        }
 
         private static IReadOnlyList<BitCurveDefinition> CreateBitCurveDefinitions()
         {
@@ -1073,7 +1089,7 @@ namespace W_TB_MS
                     SetNumericCurveVisibility(definition, true);
             }
 
-            var numericSelector = new TreeView
+            numericSelector = new TreeView
             {
                 Dock = DockStyle.Right,
                 Width = 175,
@@ -1112,11 +1128,11 @@ namespace W_TB_MS
             };
             btnToggleCurveSelector.Click += (s, e) =>
             {
-                bool showSelector = !numericSelector.Visible;
-                numericSelector.Visible = showSelector;
+                // 三个页面的曲线选择器同步显示/隐藏，任一选中状态在切换 Tab 后依然生效。
+                bool showSelector = ApplyTreeSelectorToggle(numericSelector, bitSelector, stateSelector);
                 btnToggleCurveSelector.Text = showSelector ? "隐藏曲线选择" : "显示曲线选择";
             };
-            _toolTip.SetToolTip(btnToggleCurveSelector, "切换参数页右侧曲线选择区域");
+            _toolTip.SetToolTip(btnToggleCurveSelector, "切换参数页/状态页/故障页右侧曲线选择区域");
             panelTop.Controls.Add(btnToggleCurveSelector);
 
             bool updatingNumericChecks = false;
@@ -1245,7 +1261,8 @@ namespace W_TB_MS
                 Func<bool> isFollowing,
                 Action stopFollowing,
                 Action backToNow,
-                out Button backButton)
+                out Button backButton,
+                out TreeView pageSelector)
             {
                 var page = new TabPage(pageName) { Padding = new Padding(0) };
                 plot.Dock = DockStyle.Fill;
@@ -1294,6 +1311,7 @@ namespace W_TB_MS
                     ShowPlusMinus = true,
                 Font = new Font("Microsoft YaHei", 9F)
                 };
+                pageSelector = selector;
                 foreach (var group in definitions.GroupBy(item => new { item.Address, item.GroupName }))
                 {
                     var groupNode = new TreeNode(group.Key.GroupName);
@@ -1380,7 +1398,8 @@ namespace W_TB_MS
                 () => _followBitCurrentTime,
                 () => _followBitCurrentTime = false,
                 BackToBitNow,
-                out btnBitBackToNow);
+                out btnBitBackToNow,
+                out bitSelector);
 
             stateFormsPlot = new ScottPlot.WinForms.FormsPlot();
             var stateChartPage = CreateBitChartPage(
@@ -1390,7 +1409,8 @@ namespace W_TB_MS
                 () => _followStateCurrentTime,
                 () => _followStateCurrentTime = false,
                 BackToStateNow,
-                out btnStateBackToNow);
+                out btnStateBackToNow,
+                out stateSelector);
 
             chartTabs.TabPages.Add(numericChartPage);
             chartTabs.TabPages.Add(stateChartPage);
