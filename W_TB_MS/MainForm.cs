@@ -3723,18 +3723,19 @@ namespace W_TB_MS
 
         /// <summary>
         /// 顶部状态栏"设置模式"文本：由 40001（开关机）、40201（1=制冷，2=制热）与 40202（生活热水启用）组合。
-        /// 40001=0 时不判断 40201，不显示制冷/制热；40002=0 时不显示"热水"。
+        /// 40001=1 时判断 40201 显示制冷/制热；40001=0 时不判断 40201，不显示制冷/制热。
+        /// 40202=1 时显示热水；40001 和 40202 都是 0 时才显示"关机"，40001=0 且 40202=1 显示"热水"。
         /// </summary>
-        private static string SetModeText(IReadOnlyDictionary<ushort, ushort> values)
+        internal static string SetModeText(IReadOnlyDictionary<ushort, ushort> values)
         {
             if (!values.TryGetValue(RegisterMap.ON_OFF_ADDR, out ushort onOff) ||
                 !values.TryGetValue(RegisterMap.SET_WORK_MODE_ADDR, out ushort mode) ||
                 !values.TryGetValue(RegisterMap.HOT_WATER_ENABLE_ADDR, out ushort hotWaterRaw))
                 return "数据缺失";
 
-            // 40001=0：不判断 40201，不显示制冷/制热
+            // 40001=0：不判断 40201，不显示制冷/制热；40202=1 显示"热水"，40202=0 显示"关机"
             if (onOff == 0)
-                return "关机";
+                return hotWaterRaw != 0 ? "热水" : "关机";
 
             string baseMode = mode switch
             {
