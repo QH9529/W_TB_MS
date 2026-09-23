@@ -3692,7 +3692,10 @@ namespace W_TB_MS
                 return RUNTIME_MODE_DATA_MISSING;
 
             ushort baseBits = (ushort)((status >> 3) & 0x07);
-            bool hotWater = (status & 0x0040) != 0; // bit6 生活热水运行状态
+            // bit6 生活热水运行状态；30223 电动三通球阀1 位置（0=未通热水，热水相关模式不显示）
+            bool hotWater = (status & 0x0040) != 0
+                && values.TryGetValue(RegisterMap.THREE_WAY_VALVE1_ADDR, out ushort valve1)
+                && valve1 == 1;
 
             return (baseBits, hotWater) switch
             {
