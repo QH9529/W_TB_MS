@@ -150,9 +150,11 @@ public class RegisterMapTests
     [Fact]
     public void ComputeRuntimeMode2Enum_MapsStatusWordCorrectly()
     {
-        // 运行模式2：30106 bit3~5 + bit6，热水相关模式还需 30223=1
+        // 运行模式2：30106 bit3~5 + bit6，热水相关模式还需 30223≠0
         // bit3~5=000 + bit6=0 → 1=制冷
         Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_COOLING, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b0000 }));
+        // bit3~5=000 + bit6=1 + 30223≠0 → 2=制冷+热水
+        Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_COOLING_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b100_0000, [30223] = 2 }));
         // bit3~5=000 + bit6=1 + 30223=1 → 2=制冷+热水
         Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_COOLING_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b100_0000, [30223] = 1 }));
         // bit3~5=000 + bit6=1 + 30223=0 → 1=制冷（不显示热水）
@@ -161,11 +163,11 @@ public class RegisterMapTests
         Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_COOLING, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b100_0000 }));
         // bit3~5=011 + bit6=0 → 3=制热
         Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_HEATING, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b01_1000 }));
-        // bit3~5=011 + bit6=1 + 30223=1 → 4=制热+热水
+        // bit3~5=011 + bit6=1 + 30223≠0 → 4=制热+热水
         Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_HEATING_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b101_1000, [30223] = 1 }));
         // bit3~5=011 + bit6=1 + 30223=0 → 3=制热（不显示热水）
         Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_HEATING, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b101_1000, [30223] = 0 }));
-        // bit3~5=110（除霜）+ bit6=1 + 30223=1 → 5=热水
+        // bit3~5=110（除霜）+ bit6=1 + 30223≠0 → 5=热水
         Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_HOT_WATER, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b111_0000, [30223] = 1 }));
         // bit3~5=110（除霜）+ bit6=1 + 30223=0 → 6=压机未运行（不显示热水）
         Assert.Equal(W_TB_MS.MainForm.RUNTIME_MODE2_COMPRESSOR_OFF, W_TB_MS.MainForm.ComputeRuntimeMode2Enum(new Dictionary<ushort, ushort> { [30106] = 0b111_0000, [30223] = 0 }));

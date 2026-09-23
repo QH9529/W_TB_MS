@@ -1,0 +1,1 @@
+- 打包发布前必须校验产物：解包检查 W_TB_MS.exe 的 FileVersion 与目标版本一致（增量发布曾复用旧程序集导致 Setup 内 exe 仍是 1.0.11）；必要时先 git clean bin/obj 再构建。
