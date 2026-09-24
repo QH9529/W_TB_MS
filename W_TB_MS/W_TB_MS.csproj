@@ -12,9 +12,9 @@
     <RootNamespace>W_TB_MS</RootNamespace>
     <Product>W_TB_MS</Product>
     <Title>W_TB_MS</Title>
-    <Version>1.0.15</Version>
-    <AssemblyVersion>1.0.15.0</AssemblyVersion>
-    <FileVersion>1.0.15.0</FileVersion>
+    <Version>1.0.16</Version>
+    <AssemblyVersion>1.0.16.0</AssemblyVersion>
+    <FileVersion>1.0.16.0</FileVersion>
     <!-- NU1701 来源：OpenTK 3.1.0 / OpenTK.GLControl 3.1.0 经 SkiaSharp.Views.WindowsForms 2.88.9（ScottPlot 渲染链）传递引入，代码无直接使用，工程内抑制 -->
     <NoWarn>$(NoWarn);NU1701</NoWarn>
   </PropertyGroup>

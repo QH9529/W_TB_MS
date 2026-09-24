@@ -6,18 +6,9 @@ namespace W_TB_MS
 {
     public sealed class HistoryChartForm : Form
     {
-        private const float HoverDistancePixels = 10;
         private readonly CurveHistoryData _data;
         private readonly List<double> _timeData;
-        private readonly ToolTip _chartToolTip = new()
-        {
-            InitialDelay = 0,
-            ReshowDelay = 0,
-            AutoPopDelay = 30000,
-            ShowAlways = true,
-            UseAnimation = false,
-            UseFading = false
-        };
+        private readonly ChartToolTip _chartToolTip = new();
 
         public HistoryChartForm(CurveHistoryData data, string sourcePath)
         {
@@ -167,71 +158,54 @@ namespace W_TB_MS
             if (_timeData.Count == 0)
                 return;
 
-            CurveHistorySeries? selectedSeries = null;
-            ScottPlot.DataPoint selectedPoint = default;
-            float selectedDistance = float.PositiveInfinity;
-            var mousePixel = new ScottPlot.Pixel(mouseEvent.X, mouseEvent.Y);
-            foreach (CurveHistorySeries item in series)
-            {
-                if (!plottables.TryGetValue(item.Key, out ScottPlot.IPlottable? plot)
-                    || !plot.IsVisible
-                    || plot is not ScottPlot.IGetNearest nearest)
-                    continue;
-
-                ScottPlot.Coordinates coordinates = formsPlot.Plot.GetCoordinates(
-                    mouseEvent.X,
-                    mouseEvent.Y,
-                    plot.Axes.XAxis,
-                    plot.Axes.YAxis);
-                ScottPlot.DataPoint point = nearest.GetNearest(
-                    coordinates,
-                    formsPlot.Plot.LastRender,
-                    HoverDistancePixels);
-                if (!point.IsReal)
-                    continue;
-
-                float distance = formsPlot.Plot
-                    .GetPixel(point.Coordinates, plot.Axes.XAxis, plot.Axes.YAxis)
-                    .DistanceFrom(mousePixel);
-                if (distance < selectedDistance)
-                {
-                    selectedSeries = item;
-                    selectedPoint = point;
-                    selectedDistance = distance;
-                }
-            }
-
-            if (selectedSeries == null
-                || selectedPoint.Index < 0
-                || selectedPoint.Index >= _data.Times.Count)
+            // 所有曲线共用同一时间轴，按鼠标 X 定位时间索引后逐条列出可见曲线的值。
+            ScottPlot.Coordinates mouseCoordinates = formsPlot.Plot.GetCoordinates(mouseEvent.X, mouseEvent.Y);
+            int index = MainForm.FindNearestTimeIndex(_timeData, mouseCoordinates.X);
+            if (index < 0)
             {
                 _chartToolTip.Hide(formsPlot);
                 return;
             }
 
-            string valueText = MainForm.IsDurationAddress(selectedSeries.Address)
-                ? MainForm.FormatDurationSeconds(selectedPoint.Y)
-                : selectedPoint.Y.ToString("0.###", CultureInfo.CurrentCulture);
-            string unitSuffix = MainForm.IsDurationAddress(selectedSeries.Address)
-                ? string.Empty
-                : $" {selectedSeries.Unit}";
-            if (selectedSeries.Kind == CurveSeriesKind.Bit)
+            var lines = new List<string>();
+            foreach (CurveHistorySeries item in series)
             {
-                int bitValue = selectedPoint.Y >= 0.5 ? 1 : 0;
-                string state = bitValue == 1 ? selectedSeries.OneText : selectedSeries.ZeroText;
-                valueText = $"{bitValue} / {state}";
-                unitSuffix = $" {selectedSeries.Unit}";
-            }
-            string text = $"时间：{_data.Times[selectedPoint.Index]:yyyy-MM-dd HH:mm:ss.fff}\n" +
-                $"{selectedSeries.Name}：{valueText}{unitSuffix}".TrimEnd();
+                if (!plottables.TryGetValue(item.Key, out ScottPlot.IPlottable? plot)
+                    || !plot.IsVisible)
+                    continue;
+                if (index >= item.Values.Count)
+                    continue;
 
-            int tooltipX = mouseEvent.X + 16;
-            int tooltipY = mouseEvent.Y + 20;
-            if (tooltipX > formsPlot.ClientSize.Width - 380)
-                tooltipX = Math.Max(4, mouseEvent.X - 375);
-            if (tooltipY > formsPlot.ClientSize.Height - 320)
-                tooltipY = Math.Max(4, mouseEvent.Y - 315);
-            _chartToolTip.Show(text, formsPlot, tooltipX, tooltipY, 30000);
+                double value = item.Values[index];
+                string valueText;
+                string unitSuffix;
+                if (item.Kind == CurveSeriesKind.Bit)
+                {
+                    int bitValue = value >= 0.5 ? 1 : 0;
+                    valueText = $"{bitValue} / {(bitValue == 1 ? item.OneText : item.ZeroText)}";
+                    unitSuffix = $" {item.Unit}";
+                }
+                else
+                {
+                    valueText = MainForm.IsDurationAddress(item.Address)
+                        ? MainForm.FormatDurationSeconds(value)
+                        : value.ToString("0.###", CultureInfo.CurrentCulture);
+                    unitSuffix = MainForm.IsDurationAddress(item.Address)
+                        ? string.Empty
+                        : $" {item.Unit}";
+                }
+                lines.Add($"{item.Name}：{valueText}{unitSuffix}".TrimEnd());
+            }
+
+            if (lines.Count == 0)
+            {
+                _chartToolTip.Hide(formsPlot);
+                return;
+            }
+
+            string text = $"时间：{_data.Times[index]:yyyy-MM-dd HH:mm:ss.fff}\n" +
+                string.Join("\n", lines);
+            _chartToolTip.Show(formsPlot, mouseEvent, text);
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)

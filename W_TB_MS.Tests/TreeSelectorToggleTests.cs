@@ -10,17 +10,14 @@ public class TreeSelectorToggleTests
     {
         var first = new TreeView();
         var second = new TreeView();
-        var third = new TreeView();
         first.Visible = true;
         second.Visible = true;
-        third.Visible = true;
 
-        bool shown = MainForm.ApplyTreeSelectorToggle(first, second, third);
+        bool shown = MainForm.ApplyTreeSelectorToggle(first, second);
 
         Assert.False(shown);
         Assert.False(first.Visible);
         Assert.False(second.Visible);
-        Assert.False(third.Visible);
     }
 
     [Fact]
@@ -28,17 +25,14 @@ public class TreeSelectorToggleTests
     {
         var first = new TreeView();
         var second = new TreeView();
-        var third = new TreeView();
         first.Visible = false;
         second.Visible = false;
-        third.Visible = false;
 
-        bool shown = MainForm.ApplyTreeSelectorToggle(first, second, third);
+        bool shown = MainForm.ApplyTreeSelectorToggle(first, second);
 
         Assert.True(shown);
         Assert.True(first.Visible);
         Assert.True(second.Visible);
-        Assert.True(third.Visible);
     }
 
     [Fact]
@@ -46,15 +40,13 @@ public class TreeSelectorToggleTests
     {
         var first = new TreeView();
         var second = new TreeView();
-        var third = new TreeView();
         first.Visible = true;
         second.Visible = false;
-        third.Visible = false;
 
-        bool shown = MainForm.ApplyTreeSelectorToggle(first, second, third);
+        bool shown = MainForm.ApplyTreeSelectorToggle(first, second);
 
         Assert.False(shown);
-        Assert.All(new[] { first, second, third }, tree => Assert.False(tree.Visible));
+        Assert.All(new[] { first, second }, tree => Assert.False(tree.Visible));
     }
 
     [Fact]
@@ -62,12 +54,11 @@ public class TreeSelectorToggleTests
     {
         var first = new TreeView();
         var second = new TreeView();
-        var third = new TreeView();
 
-        Assert.False(MainForm.ApplyTreeSelectorToggle(first, second, third));
-        Assert.All(new[] { first, second, third }, tree => Assert.False(tree.Visible));
+        Assert.False(MainForm.ApplyTreeSelectorToggle(first, second));
+        Assert.All(new[] { first, second }, tree => Assert.False(tree.Visible));
 
-        Assert.True(MainForm.ApplyTreeSelectorToggle(first, second, third));
-        Assert.All(new[] { first, second, third }, tree => Assert.True(tree.Visible));
+        Assert.True(MainForm.ApplyTreeSelectorToggle(first, second));
+        Assert.All(new[] { first, second }, tree => Assert.True(tree.Visible));
     }
 }
