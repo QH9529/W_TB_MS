@@ -36,3 +36,8 @@ tools/setup-builder/W_TB_MS-v*-Setup.pdb
 # Local editor/analysis metadata
 .codeartsdoer/
 .codegraph/
+.workbuddy/
+
+# Python bytecode cache (temp/ 下的验证脚本运行时生成)
+__pycache__/
+*.pyc
