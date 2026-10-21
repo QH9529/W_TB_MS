@@ -98,7 +98,13 @@ namespace W_TB_MS.Modbus
         /// <returns>寄存器值数组</returns>
         public ushort[] ReadInputRegisters(ushort startAddress, ushort quantity)
         {
-            return ReadRegisters(0x04, startAddress, quantity);
+            return ReadRegisters(0x04, startAddress, quantity, SlaveAddress);
+        }
+
+        /// <summary>读输入寄存器（指定从机地址，不受 SlaveAddress 属性影响）</summary>
+        public ushort[] ReadInputRegisters(ushort startAddress, ushort quantity, byte slaveAddress)
+        {
+            return ReadRegisters(0x04, startAddress, quantity, slaveAddress);
         }
 
         /// <summary>
@@ -106,11 +112,23 @@ namespace W_TB_MS.Modbus
         /// </summary>
         public ushort[] ReadHoldingRegisters(ushort startAddress, ushort quantity)
         {
-            return ReadRegisters(0x03, startAddress, quantity);
+            return ReadRegisters(0x03, startAddress, quantity, SlaveAddress);
+        }
+
+        /// <summary>读保持寄存器（指定从机地址）</summary>
+        public ushort[] ReadHoldingRegisters(ushort startAddress, ushort quantity, byte slaveAddress)
+        {
+            return ReadRegisters(0x03, startAddress, quantity, slaveAddress);
         }
 
         /// <summary>写单个保持寄存器 (功能码 0x06)</summary>
         public void WriteSingleRegister(ushort address, ushort value)
+        {
+            WriteSingleRegister(address, value, SlaveAddress);
+        }
+
+        /// <summary>写单个保持寄存器（指定从机地址，用于风盘/地暖等非热泵从机）</summary>
+        public void WriteSingleRegister(ushort address, ushort value, byte slaveAddress)
         {
             CancellationToken cancellationToken = _operationCancellation.Token;
             lock (_lock)
@@ -120,16 +138,16 @@ namespace W_TB_MS.Modbus
                     throw new InvalidOperationException("串口未打开");
 
                 // 请求帧: 从机地址 + 主机地址 + 0x06 + 寄存器地址(2B) + 值(2B) + CRC(2B)
-                byte[] request = BuildWriteSingleRegisterFrame(MasterAddress, SlaveAddress, address, value);
+                byte[] request = BuildWriteSingleRegisterFrame(MasterAddress, slaveAddress, address, value);
 
                 _serialPort.DiscardInBuffer();
                 _serialPort.Write(request, 0, request.Length);
                 FrameObserved?.Invoke("TX", request);
 
                 // 读取响应
-                byte[] response = ReadResponse(0x06, cancellationToken);
+                byte[] response = ReadResponse(0x06, slaveAddress, cancellationToken);
                 FrameObserved?.Invoke("RX", response);
-                ValidateResponse(response, 0x06);
+                ValidateResponse(response, 0x06, slaveAddress);
                 if (response[3] != (byte)(address >> 8) || response[4] != (byte)address ||
                     response[5] != (byte)(value >> 8) || response[6] != (byte)value)
                 {
@@ -139,7 +157,76 @@ namespace W_TB_MS.Modbus
             }
         }
 
-        private ushort[] ReadRegisters(byte functionCode, ushort startAddress, ushort quantity)
+        /// <summary>
+        /// 写多个保持寄存器 (功能码 0x10)
+        /// 用于 40107~40110 这类需要整段写入的多寄存器数据（64 位 UNIX 时间戳）。
+        /// </summary>
+        public void WriteMultipleRegisters(ushort startAddress, ushort[] values)
+        {
+            WriteMultipleRegisters(startAddress, values, SlaveAddress);
+        }
+
+        /// <summary>写多个保持寄存器（指定从机地址）</summary>
+        public void WriteMultipleRegisters(ushort startAddress, ushort[] values, byte slaveAddress)
+        {
+            if (values == null || values.Length is 0 or > 123)
+                throw new ArgumentOutOfRangeException(nameof(values), "写入寄存器数量必须在1到123之间");
+
+            CancellationToken cancellationToken = _operationCancellation.Token;
+            lock (_lock)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_serialPort?.IsOpen != true)
+                    throw new InvalidOperationException("串口未打开");
+
+                byte[] request = BuildWriteMultipleRegistersFrame(MasterAddress, slaveAddress, startAddress, values);
+
+                _serialPort.DiscardInBuffer();
+                _serialPort.Write(request, 0, request.Length);
+                FrameObserved?.Invoke("TX", request);
+
+                byte[] response = ReadResponse(0x10, slaveAddress, cancellationToken);
+                FrameObserved?.Invoke("RX", response);
+                ValidateResponse(response, 0x10, slaveAddress);
+                ushort echoedQuantity = (ushort)((response[5] << 8) | response[6]);
+                if (response[3] != (byte)(startAddress >> 8) || response[4] != (byte)startAddress ||
+                    echoedQuantity != (ushort)values.Length)
+                {
+                    throw new InvalidDataException("写入响应回显的寄存器地址或数量不匹配");
+                }
+                cancellationToken.WaitHandle.WaitOne(InterFrameDelayMilliseconds);
+            }
+        }
+
+        /// <summary>构造写多个保持寄存器请求帧（0x10：从机+主机+功能码+地址2B+数量2B+字节数1B+数据nB+CRC2B）</summary>
+        internal static byte[] BuildWriteMultipleRegistersFrame(byte masterAddress, byte slaveAddress, ushort startAddress, ushort[] values)
+        {
+            if (values == null || values.Length is 0 or > 123)
+                throw new ArgumentOutOfRangeException(nameof(values), "写入寄存器数量必须在1到123之间");
+
+            int byteCount = values.Length * 2;
+            // 8 字节帧头（从机+主机+功能码+地址2B+数量2B+字节数1B）+ 数据 + CRC2B
+            byte[] request = new byte[10 + byteCount];
+            request[0] = slaveAddress;
+            request[1] = masterAddress;
+            request[2] = 0x10;
+            request[3] = (byte)(startAddress >> 8);
+            request[4] = (byte)(startAddress & 0xFF);
+            request[5] = (byte)(values.Length >> 8);
+            request[6] = (byte)(values.Length & 0xFF);
+            request[7] = (byte)byteCount;
+            for (int i = 0; i < values.Length; i++)
+            {
+                request[8 + i * 2] = (byte)(values[i] >> 8);
+                request[9 + i * 2] = (byte)values[i];
+            }
+            ushort crc = CalculateCrc(request, request.Length - 2);
+            request[^2] = (byte)crc;
+            request[^1] = (byte)(crc >> 8);
+            return request;
+        }
+
+        private ushort[] ReadRegisters(byte functionCode, ushort startAddress, ushort quantity, byte slaveAddress)
         {
             CancellationToken cancellationToken = _operationCancellation.Token;
             lock (_lock)
@@ -148,16 +235,16 @@ namespace W_TB_MS.Modbus
                 if (_serialPort?.IsOpen != true)
                     throw new InvalidOperationException("串口未打开");
 
-                byte[] request = BuildReadRequestFrame(MasterAddress, SlaveAddress, functionCode, startAddress, quantity);
+                byte[] request = BuildReadRequestFrame(MasterAddress, slaveAddress, functionCode, startAddress, quantity);
 
                 _serialPort.DiscardInBuffer();
                 _serialPort.Write(request, 0, request.Length);
                 FrameObserved?.Invoke("TX", request);
 
                 // 等待响应 (协议要求6ms~40ms)
-                byte[] response = ReadResponse(functionCode, cancellationToken);
+                byte[] response = ReadResponse(functionCode, slaveAddress, cancellationToken);
                 FrameObserved?.Invoke("RX", response);
-                ValidateResponse(response, functionCode);
+                ValidateResponse(response, functionCode, slaveAddress);
 
                 // 解析数据
                 // W协议响应: 从机地址 + 响应标识 + 功能码 + 起始地址(2B) + 字节数 + 数据 + CRC(2B)
@@ -177,16 +264,16 @@ namespace W_TB_MS.Modbus
             }
         }
 
-        private byte[] ReadResponse(byte expectedFunctionCode, CancellationToken cancellationToken)
+        private byte[] ReadResponse(byte expectedFunctionCode, byte expectedSlaveAddress, CancellationToken cancellationToken)
         {
             if (_serialPort == null) throw new InvalidOperationException("串口未打开");
 
             long deadline = Stopwatch.GetTimestamp() + (long)(ReadTimeout * (double)Stopwatch.Frequency / 1000.0);
             while (Stopwatch.GetTimestamp() < deadline)
             {
-                // 抓包显示串口可能一次返回多帧，先同步到完整的 F1 FF 功能帧头。
+                // 抓包显示串口可能一次返回多帧，先同步到完整的 从机地址 FF 功能帧头。
                 cancellationToken.ThrowIfCancellationRequested();
-                if (!ReadByteUntil(deadline, cancellationToken, out byte first) || first != SlaveAddress)
+                if (!ReadByteUntil(deadline, cancellationToken, out byte first) || first != expectedSlaveAddress)
                     continue;
                 if (!ReadByteUntil(deadline, cancellationToken, out byte marker) || marker != 0xFF)
                     continue;
@@ -252,7 +339,7 @@ namespace W_TB_MS.Modbus
             }
         }
 
-        private void ValidateResponse(byte[] response, byte expectedFunctionCode)
+        private void ValidateResponse(byte[] response, byte expectedFunctionCode, byte expectedSlaveAddress)
         {
             if (response.Length < 6)
                 throw new InvalidDataException("响应数据不完整");
@@ -261,8 +348,8 @@ namespace W_TB_MS.Modbus
             if (response[1] != 0xFF)
                 throw new InvalidDataException($"响应标识错误: 0x{response[1]:X2}，期望 0xFF");
 
-            if (response[0] != SlaveAddress)
-                throw new InvalidDataException($"从机地址不匹配: 0x{response[0]:X2}，期望 0x{SlaveAddress:X2}");
+            if (response[0] != expectedSlaveAddress)
+                throw new InvalidDataException($"从机地址不匹配: 0x{response[0]:X2}，期望 0x{expectedSlaveAddress:X2}");
 
             // 检查功能码（异常响应时最高位为1）
             byte funcCode = response[2];

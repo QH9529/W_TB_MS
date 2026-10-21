@@ -16,10 +16,11 @@ namespace W_TB_MS
     public partial class MainForm : Form
     {
         /// <summary>
-        /// 同步切换两个分区（参数曲线/BIT曲线）的曲线选择树显示状态：
-        /// 以参数树当前是否可见取反，二者统一显示或隐藏。返回切换后是否可见。
+        /// 同步切换两个分区（参数曲线/BIT曲线）的曲线选择区域显示状态：
+        /// 以参数区容器当前是否可见取反，二者统一显示或隐藏。返回切换后是否可见。
+        /// 传入的是包裹了搜索框的容器 Panel，隐藏时要连搜索框一起藏。
         /// </summary>
-        internal static bool ApplyTreeSelectorToggle(TreeView first, TreeView second)
+        internal static bool ApplyTreeSelectorToggle(Control first, Control second)
         {
             bool show = !first.Visible;
             first.Visible = show;
@@ -382,7 +383,7 @@ namespace W_TB_MS
                     .ToList()
             };
 
-            foreach (NumericCurveDefinition definition in NumericCurveDefinitions)
+            foreach (NumericCurveDefinition definition in ActiveNumericCurveDefinitions)
             {
                 data.NumericSeries.Add(new CurveHistorySeries
                 {
@@ -397,7 +398,7 @@ namespace W_TB_MS
                 });
             }
 
-            foreach (BitCurveDefinition definition in BitCurveDefinitions)
+            foreach (BitCurveDefinition definition in ActiveBitCurveDefinitions)
             {
                 data.BitSeries.Add(new CurveHistorySeries
                 {
@@ -412,7 +413,7 @@ namespace W_TB_MS
                 });
             }
 
-            foreach (ushort address in BitCurveRegisterAddresses)
+            foreach (ushort address in ActiveBitCurveAddresses)
                 data.BitRegisters[address] = _allBitRegisterData[address].GetRange(startIndex, sampleCount);
 
             return data;
@@ -630,6 +631,7 @@ namespace W_TB_MS
             ushort address,
             IReadOnlyDictionary<ushort, ushort> values)
         {
+            // 只按主机参数解析：设备侧（风盘）曲线随在线位图变化，没有稳定的静态定义可查。
             NumericCurveDefinition definition = NumericCurveDefinitions.FirstOrDefault(item => item.Address == address)
                 ?? throw new ArgumentOutOfRangeException(nameof(address), address, "不是数值曲线寄存器");
             return DecodeNumericCurveValue(definition, values);
@@ -652,6 +654,10 @@ namespace W_TB_MS
 
         private static string FormatNumericCurveValue(NumericCurveDefinition definition, double value)
         {
+            // 风盘等设备曲线在掉线/未采到数据时以 NaN 断开，这里显示占位符而不是 "NaN"。
+            if (double.IsNaN(value))
+                return "--";
+
             if (IsDurationAddress(definition.Address))
                 return FormatDurationSeconds(value);
 
@@ -754,7 +760,7 @@ namespace W_TB_MS
             }
 
             var lines = new List<string>();
-            foreach (NumericCurveDefinition definition in NumericCurveDefinitions)
+            foreach (NumericCurveDefinition definition in ActiveNumericCurveDefinitions)
             {
                 if (!_numericCurvePlottables.TryGetValue(definition.Address, out ScottPlot.IPlottable? curve)
                     || !curve.IsVisible)
@@ -801,7 +807,7 @@ namespace W_TB_MS
             }
 
             var lines = new List<string>();
-            foreach (BitCurveDefinition definition in BitCurveDefinitions)
+            foreach (BitCurveDefinition definition in ActiveBitCurveDefinitions)
             {
                 var key = (definition.Address, definition.Bit);
                 if (!_bitCurvePlottables.TryGetValue(key, out ScottPlot.IPlottable? curve)

@@ -1,0 +1,59 @@
+2||通讯网络|网络通讯由主机发起，主机向从机发送请求帧，从机响应主机的请求，发出响应帧。
+3||通讯接口|硬件接口：RS485，波特率：9600 bit/s，起始位：1，数据位：8，奇偶校验位：无，停止位：1。
+4|||协议接口：基于Modbus RTU协议报文格式，添加了自定义字段，具体见“数据帧格式”部分。
+5||通讯时序|从机： / 1、接收时序： / 通讯模块在连续接收请求数据帧期间，如果检测到两个字节之间出现大于3ms的总线空闲时间，把当前接收的字节作为下一帧数据的起始字节。 / 2、发送时序： / 通讯模块接收完主机请求帧的最后一个字节，通讯模块要在6ms～40ms（总线空闲时间）之间，发出响应帧的第一个字节,设计时应尽可能接近6ms。
+6|||主机： / 1、接收时序： / 通讯模块在连续接收请求数据帧期间，如果检测到两个字节之间出现大于3ms的总线空闲时间，把当前接收的字节作为下一帧数据的起始字节。 / 2、发送时序 Sending Timing： / ①收到从机响应数据后，主机间隔至少20ms，才可以发送下一帧数据； / ②主机发送请求帧后，等待从机响应帧100ms，如果在100ms内收不到从机的响应帧，主机重发请求帧，一共做2次重发，即收不到从机的响应帧，主机最多连续发送3次请求帧。
+7|||注意：为提高通讯可靠性，时序是通讯过程中必须严格要求的，在控制器测试时，需要严格测试这一项。
+8||帧格式|在Modbus RTU报文格式基础上： / 1、请求帧增加“主机地址”字段（1 byte）。 / 2、响应帧增加“响应标识”字段（1 byte），固定为0xFF。 / 3、响应帧没有“寄存器地址”的帧格式增加“寄存器地址”字段（2 bytes）。
+9||设备地址|设备类型|主从机类型|设备地址|组播地址|广播地址|备注
+10|||mixpad|主机|0x51～0x5F|0x50|0x00|由上位机统一分配，多个mixpad地址不能重复
+11|||热泵主机|从机|0xF1～0xF4|0xF0||地址由两位拨码开关决定：00->0xF1,01->0xF2,10->0xF3,11->0xF4
+12|||地暖||0xA1～0xAF|0xA0||低四位由地暖拨码开关决定，多个地暖地址不能重复
+13|||风盘||0x91～0x9F|0x90||低四位由风盘拨码开关决定，多个风盘地址不能重复
+14||功能码|功能名称||||功能码
+15|||读输入寄存器 Read Input Registers||||0x04
+16|||读保持寄存器 Read Holding Registers||||0x03
+17|||写单个保持寄存器 Write Single Holding Register||||0x06
+18|||写多个保持寄存器 Write Multiple Holding Registers||||0x10
+19|||异常响应 Exception Response||||0x8x
+20||通信方式|Modbus是一个主从方式的请求/应答协议，在同一时刻，总线上只能有一个主机，通讯请求只能由主机发起，从机之间不能相互通讯。 / 1、单播模式：主机用某一从机地址发出请求帧，该从机地址的设备接收到请求帧并处理完请求后，向主机应答响应帧。 / 2、广播模式：主机用广播地址发出请求帧，所有从机都需要处理该请求帧，但无需应答响应帧。广播请求用于写命令，仅允许用写功能码0x06、0x10发出请求帧。 / 3、组播模式：主机用组播地址发出请求帧，所有隶属于该组播地址的从机设备都需要处理该请求，但无需应答响应帧。组播请求用于写命令，仅允许用写功能码0x06、0x10发出请求帧。
+21||功能定义|0x03 读保持寄存器 0x03 Read Holding Registers/0x04 读输入寄存器 0x04 Read Input Registers
+22|||主机请求 Host Request
+23|||设备地址 / Device Address|主机地址 / Host Address|功能码 / Function Code|寄存器起始地址 / Register Start Address|寄存器数量 / Number of Registers |CRC校验码 / CRC Check Code 
+24|||1 byte|1 byte|1 byte|2 bytes|2 bytes|2 bytes
+25|||从机响应 Slave Response
+26|||设备地址 / Device Address|响应标识 / Response Identification|功能码 / Function Code|寄存器起始地址 / Register Start Address|字节数 / Number of Bytes|有效数据 / Valid data|CRC校验码 / CRC Check Code 
+27|||1 byte|1 byte|1 byte|2 bytes|1 bytes|n bytes|2 bytes
+28|||举例说明 Examples
+29||||域名  / Domains|数值（hex） / Numerical Values（hex）||域名  / Domains|数值（hex） / Numerical Values（hex）
+30|||主机请求  / Host Request|从机地址 / Slave address|A1|从机响应 / Slave Response|从机地址 / Slave address|A1
+31||||主机地址 / Host Address|51||响应标识 / Response Identification|FF
+32||||功能码 / Function Code|04||功能码 / Function Code|04
+33||||寄存器起始地址Hi / Register Start Address Hi|7D||寄存器起始地址Hi / Register Start Address Hi|7D
+34||||寄存器起始地址Lo / Register Start Address Lo|01||寄存器起始地址Lo / Register Start Address Lo|01
+35||||寄存器数量Hi / Number of Registers Hi|00||字节数 / Number of Bytes|04
+36||||寄存器数量Lo / Number of Registers Lo|02||寄存器值Hi（32001） / Register Value Hi（32001）|00
+37||||CRC校验码Lo / CRC Check Code Lo|||寄存器值Lo（32001） / Register Value Lo（32001）|00
+38||||CRC校验码Hi / CRC Check Code Hi|||寄存器值Hi（32002） / Register Value Hi（32002）|01
+39|||||||寄存器值Lo（32002） / Register Value Lo（32002）|01
+40|||||||CRC校验码Lo / CRC Check Code Lo
+41|||||||CRC校验码Hi / CRC Check Code Hi
+42|||这是一个主机请求读设备A1中多个寄存器的实例，从寄存器地址32001开始读取2个寄存器； / 从机设备A1响应主机，将寄存器32001的内容表示为两个十六进制字节值 00 00,将寄存器32002的内容分别表示为十六进制 01 01。
+43|||0x06 写单个保持寄存器 0x06 Write Single Holding Register
+44|||主机请求  / Host Request
+45|||设备地址 / Device Address|主机地址 / Host Address|功能码 / Function Code|寄存器地址 / Register Address|有效数据 / Valid data|CRC校验码 / CRC Check Code 
+46|||1 byte|1 byte|1 byte|2 bytes|2 bytes|2 bytes
+47|||从机响应 Slave Response
+48|||设备地址 / Device Address|响应标识 / Response Identification|功能码 / Function Code|寄存器地址 / Register Address|有效数据 / Valid data|CRC校验码 / CRC Check Code 
+49|||1 byte|1 byte|1 byte|2 bytes|2 bytes|2 bytes
+50|||举例说明 Examples
+51||||域名  / Domains|数值（hex） / Numerical Values（hex）||域名  / Domains|数值（hex） / Numerical Values（hex）
+52|||主机请求  / Host Request|从机地址 / Slave address|A1|从机响应 / Slave Response|从机地址 / Slave address|A1
+53||||主机地址 / Host Address|51||响应标识 / Response Identification|FF
+54||||功能码 / Function Code|06||功能码 / Function Code|06
+55||||寄存器地址Hi / Register Address Hi|A4||寄存器地址Hi / Register Address Hi|A4
+56||||寄存器地址Lo / Register Address Lo|11||寄存器地址Lo / Register Address Lo|11
+57||||有效数据Hi / Valid Data Hi|00||有效数据Hi / Valid Data Hi|00
+58||||有效数据Lo / Valid Data Lo|01||有效数据Lo / Valid Data Lo|01
+59||||CRC校验码Lo / CRC Check Code Lo|||CRC校验码Lo / CRC Check Code Lo
+60||||CRC校验码Hi / CRC Check Code Hi|||CRC校验码Hi / CRC Check Code Hi

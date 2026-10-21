@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- x86 bootstrapper also runs on x64 Windows and can select either payload. -->
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <PlatformTarget>x86</PlatformTarget>
+    <SelfContained>true</SelfContained>
+    <!-- The distributed setup executable must run when copied by itself. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>W_TB_MS-v1.0.7-Setup</AssemblyName>
+    <RootNamespace>WTbMsSetup</RootNamespace>
+    <Version>1.0.7</Version>
+    <ApplicationIcon>TB_MS.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="payload-win-x64.zip" />
+    <EmbeddedResource Include="payload-win-x86.zip" />
+    <Content Include="TB_MS.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

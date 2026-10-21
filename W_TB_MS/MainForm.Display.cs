@@ -57,6 +57,11 @@ namespace W_TB_MS
             if (Has(30001)) SetVal(30001, FormatRegisterWords(values, 30001, 2));
             if (Has(30003)) SetVal(30003, FormatRegisterWords(values, 30003, 2));
             if (Has(30005)) SetVal(30005, DecodeAscii(values, 30005, 4));
+            // 读写信息段：IMEI 与单机/并联模式字段为 9 寄存器 ASCII（不足补 0x00）
+            if (Has(RegisterMap.IMEI_ADDR))
+                SetVal(RegisterMap.IMEI_ADDR, DecodeAscii(values, RegisterMap.IMEI_ADDR, 9));
+            if (Has(RegisterMap.UNIT_MODE_ADDR))
+                SetVal(RegisterMap.UNIT_MODE_ADDR, DecodeAscii(values, RegisterMap.UNIT_MODE_ADDR, 9));
             if (Has(30009)) SetVal(30009, FormatRegisterWords(values, 30009, 2));
             if (Has(30011)) SetVal(30011, FormatRegisterWords(values, 30011, 2));
 
@@ -71,6 +76,40 @@ namespace W_TB_MS
                     double value = DecodeNumericCurveValue(definition, values);
                     SetVal(definition.Address, FormatNumericCurveValue(definition, value));
                 }
+            }
+
+            // Flash 持久化段：多寄存器组合显示。
+            if (Has(40801) && Has(40802))
+            {
+                // 40801~40802 压缩机累计运行时长，低16位在前，单位小时。
+                uint runtimeHours = (uint)(Get(40801) | (Get(40802) << 16));
+                SetVal(40801, runtimeHours.ToString(CultureInfo.CurrentCulture));
+            }
+            if (Has(RegisterMap.STERILIZE_DONE_TIME_START_ADDR))
+                SetVal(RegisterMap.STERILIZE_DONE_TIME_START_ADDR,
+                    FormatUnix64Timestamp(values, RegisterMap.STERILIZE_DONE_TIME_START_ADDR));
+            if (Has(RegisterMap.FAN_FILTER_CLEAN_TIME_START_ADDR))
+                SetVal(RegisterMap.FAN_FILTER_CLEAN_TIME_START_ADDR,
+                    FormatUnix64Timestamp(values, RegisterMap.FAN_FILTER_CLEAN_TIME_START_ADDR));
+
+            // 外机-4G：在线位图驱动风盘/分集水器分组的显示、折叠与轮询范围。
+            UpdateDevicePresence(values);
+            if (Has(RegisterMap.FAN_4G_ONLINE_STATUS_ADDR))
+                SetVal(RegisterMap.FAN_4G_ONLINE_STATUS_ADDR,
+                    FormatOnlineBitmap(Get(RegisterMap.FAN_4G_ONLINE_STATUS_ADDR), "风盘"));
+            if (Has(RegisterMap.MANIFOLD_ONLINE_STATUS_ADDR))
+                SetVal(RegisterMap.MANIFOLD_ONLINE_STATUS_ADDR,
+                    FormatOnlineBitmap(Get(RegisterMap.MANIFOLD_ONLINE_STATUS_ADDR), "分集水器"));
+
+            // 风盘模板段：硬件/软件版本号各占 2 个寄存器（高字 + 中低字），合成显示。
+            for (int fan = 1; fan <= RegisterMap.FAN_4G_MAX_COUNT; fan++)
+            {
+                ushort hw = RegisterMap.GetFan4GAddress(fan, RegisterMap.FAN_4G_HW_VERSION_OFFSET);
+                if (Has(hw) && Has((ushort)(hw + 1)))
+                    SetVal(hw, $"{Get(hw):X4}{Get((ushort)(hw + 1)):X4}");
+                ushort sw = RegisterMap.GetFan4GAddress(fan, RegisterMap.FAN_4G_SW_VERSION_OFFSET);
+                if (Has(sw) && Has((ushort)(sw + 1)))
+                    SetVal(sw, $"{Get(sw):X4}{Get((ushort)(sw + 1)):X4}");
             }
 
             // 故障报警寄存器 - 显示原始十六进制值
@@ -144,19 +183,44 @@ namespace W_TB_MS
             if (!CanRecordCurveSample(values))
                 return;
 
-            _timeData.Add(sampleTime.ToOADate());
+            // 先把本条样本的全部序列值算完，再统一追加：
+            // 任何一步失败都直接放弃整条样本，绝不出现 _timeData 已加而某条曲线未加的长度错位。
+            var numericSamples = new List<(ushort Address, double Value)>();
             foreach (NumericCurveDefinition definition in NumericCurveDefinitions)
             {
                 if (!HasNumericCurveValue(definition, values))
-                    return; // 寄存器块读取失败时整条样本不落库，保持各序列索引对齐
-                _numericCurveData[definition.Address].Add(DecodeNumericCurveValue(definition, values));
+                    return; // 主机寄存器块读取失败时整条样本不落库
+                numericSamples.Add((definition.Address, DecodeNumericCurveValue(definition, values)));
             }
 
-            foreach (ushort address in BitCurveRegisterAddresses)
+            // 风盘（内机）曲线：设备掉线或模板块读取失败时填 NaN 断开这一段，
+            // 不阻断主机曲线——主机参数的完整性与图中其它曲线无关。
+            foreach (NumericCurveDefinition definition in _deviceNumericDefinitions)
+            {
+                numericSamples.Add((definition.Address,
+                    HasNumericCurveValue(definition, values)
+                        ? DecodeNumericCurveValue(definition, values)
+                        : double.NaN));
+            }
+
+            var bitSamples = new List<(ushort Address, ushort Value)>();
+            foreach (ushort address in ActiveBitCurveAddresses)
             {
                 if (!values.TryGetValue(address, out ushort bitValue))
-                    return;
-                _allBitRegisterData[address].Add(bitValue);
+                    return; // BIT 寄存器（含在线分集水器状态字）整条对齐
+                bitSamples.Add((address, bitValue));
+            }
+
+            _timeData.Add(sampleTime.ToOADate());
+            foreach ((ushort address, double value) in numericSamples)
+            {
+                if (_numericCurveData.TryGetValue(address, out List<double>? numericSeries))
+                    numericSeries.Add(value);
+            }
+            foreach ((ushort address, ushort value) in bitSamples)
+            {
+                if (_allBitRegisterData.TryGetValue(address, out List<ushort>? bitSeries))
+                    bitSeries.Add(value);
             }
 
             PruneExpiredCurveData(sampleTime);
@@ -265,6 +329,92 @@ namespace W_TB_MS
         {
             return string.Join(" ", Enumerable.Range(0, count)
                 .Select(i => values.TryGetValue((ushort)(startAddress + i), out ushort value) ? $"{value:X4}" : "----"));
+        }
+
+        /// <summary>21016/21017 在线位图（BIT1~BIT15）转成可读文本。</summary>
+        internal static string FormatOnlineBitmap(ushort bits, string label)
+        {
+            var online = new List<int>();
+            for (int index = 1; index <= 15; index++)
+            {
+                if ((bits & (1 << index)) != 0)
+                    online.Add(index);
+            }
+            string list = online.Count == 0 ? "无" : string.Join("、", online);
+            return $"0x{bits:X4} / 在线{label}：{list}";
+        }
+
+        /// <summary>
+        /// 依据 21016/21017 在线位图刷新风盘/分集水器分组的显示与轮询范围：
+        /// 位图变化时更新分组可见性/标题，新上线的设备自动展开并加入后续轮询。
+        /// </summary>
+        private void UpdateDevicePresence(Dictionary<ushort, ushort> values)
+        {
+            bool changed = false;
+            int newlyOnlineFan = 0;
+            int newlyOnlineManifold = 0;
+
+            if (values.TryGetValue(RegisterMap.FAN_4G_ONLINE_STATUS_ADDR, out ushort fanBits))
+            {
+                int mask = fanBits & ~1;   // BIT0 保留
+                int previous = Volatile.Read(ref _onlineFanMask);
+                if (!_fan4GOnlineKnown || mask != previous)
+                {
+                    newlyOnlineFan = mask & ~previous;
+                    Volatile.Write(ref _onlineFanMask, mask);
+                    _fan4GOnlineKnown = true;
+                    changed = true;
+                }
+            }
+
+            if (values.TryGetValue(RegisterMap.MANIFOLD_ONLINE_STATUS_ADDR, out ushort manifoldBits))
+            {
+                int mask = manifoldBits & ~1;
+                int previous = Volatile.Read(ref _onlineManifoldMask);
+                if (!_manifoldOnlineKnown || mask != previous)
+                {
+                    newlyOnlineManifold = mask & ~previous;
+                    Volatile.Write(ref _onlineManifoldMask, mask);
+                    _manifoldOnlineKnown = true;
+                    changed = true;
+                }
+            }
+
+            if (!changed)
+                return;
+
+            ApplyDevicePresence(
+                Volatile.Read(ref _onlineFanMask),
+                Volatile.Read(ref _onlineManifoldMask),
+                newlyOnlineFan,
+                newlyOnlineManifold);
+
+            // 曲线勾选项同样按在线位图刷新：未在线风盘的模板区不参与轮询，无法采样。
+            RefreshDeviceCurves(
+                Volatile.Read(ref _onlineFanMask),
+                Volatile.Read(ref _onlineManifoldMask));
+        }
+
+        /// <summary>
+        /// 解析 4 寄存器 64 位 UNIX 时间戳（低地址寄存器保存低16位），格式化为本地时间。
+        /// 值为 0 表示尚未记录。
+        /// </summary>
+        private static string FormatUnix64Timestamp(Dictionary<ushort, ushort> values, ushort startAddress)
+        {
+            ulong raw = 0;
+            for (int i = 0; i < 4; i++)
+                raw |= (ulong)(values.TryGetValue((ushort)(startAddress + i), out ushort word) ? word : 0) << (16 * i);
+
+            if (raw == 0)
+                return "0 (未记录)";
+            try
+            {
+                return DateTimeOffset.FromUnixTimeSeconds((long)raw).LocalDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.CurrentCulture);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return $"0x{raw:X16}";
+            }
         }
 
         private static string DecodeAscii(Dictionary<ushort, ushort> values, ushort startAddress, int count)

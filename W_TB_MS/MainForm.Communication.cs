@@ -491,13 +491,14 @@ namespace W_TB_MS
         private Dictionary<ushort, ushort> ReadPollRegisters(int generation)
         {
             Dictionary<ushort, ushort> values = ReadPollBlockSet(
-                PollBlocks, generation, out int essentialBlocksRead, out bool mergedReadFailed);
+                BuildPollBlocks(PollBlocks), generation, out int essentialBlocksRead, out bool mergedReadFailed);
             if (!mergedReadFailed && essentialBlocksRead > 0)
                 return values;
 
             // 设备不支持合并读取时回退，保证老型号仍可使用。
             AppendLog("SYS", "连续寄存器读取失败，回退到兼容分块模式");
-            values = ReadPollBlockSet(LegacyPollBlocks, generation, out essentialBlocksRead, out _);
+            values = ReadPollBlockSet(
+                BuildPollBlocks(LegacyPollBlocks), generation, out essentialBlocksRead, out _);
             if (essentialBlocksRead == 0)
                 throw new TimeoutException("核心状态寄存器均未响应");
             return values;

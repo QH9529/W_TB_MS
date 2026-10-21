@@ -17,10 +17,16 @@
 .build-output/
 
 # Local releases and rollback installations
+# 说明：安装器源码在 tools/setup-builder（纳入版本库），此处只忽略构建产物与本地发布目录。
 artifacts/
 deployment/
 versions/
 current/
+
+# Installer build outputs (source files under tools/setup-builder stay tracked)
+tools/setup-builder/payload-*.zip
+tools/setup-builder/W_TB_MS-v*-Setup.exe
+tools/setup-builder/W_TB_MS-v*-Setup.pdb
 
 # Device captures and user-generated curve archives
 *.log

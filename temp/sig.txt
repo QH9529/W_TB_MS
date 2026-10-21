@@ -1,0 +1,8 @@
+﻿Status: NotSigned
+StatusMessage: 未对文件 D:\2-Download\com0com v.3.0.0 setup 32+64-bit signed.exe 进行数字签名。无法在当前系统上运行该脚本。有关运行脚本和设置执行策略的详细信息，请参阅 https:/go.microsoft.com/fwlink/?LinkID=135170 中的 about_Execution_Policies
+Signer: 
+Issuer: 
+Thumbprint: 
+NotAfter: 
+=== FileVersionInfo ===
+ |  |  | 

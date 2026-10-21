@@ -1,0 +1,13 @@
+﻿=== MixPadClient paths ===
+20424	C:\Users\admin\Desktop\MixPadClient.exe	"C:\Users\admin\Desktop\MixPadClient.exe" 
+28464	C:\Users\admin\Desktop\MixPadClient.exe	"C:\Users\admin\Desktop\MixPadClient.exe" 
+24372	C:\Users\admin\Desktop\MixPadClient.exe	"C:\Users\admin\Desktop\MixPadClient.exe" "--multiprocessing-fork" "parent_pid=28464" "pipe_handle=468"
+21412	C:\Users\admin\Desktop\MixPadClient.exe	"C:\Users\admin\Desktop\MixPadClient.exe" "--multiprocessing-fork" "parent_pid=28464" "pipe_handle=692"
+=== all processes with exe paths matching simulator-ish ===
+21532	TB_drive.exe	C:\Program Files (x86)\W_Series_Driver\TB_drive.exe
+8292	TB_drive.exe	C:\Program Files (x86)\W_Series_Driver\TB_drive.exe
+20424	MixPadClient.exe	C:\Users\admin\Desktop\MixPadClient.exe
+28464	MixPadClient.exe	C:\Users\admin\Desktop\MixPadClient.exe
+24372	MixPadClient.exe	C:\Users\admin\Desktop\MixPadClient.exe
+21412	MixPadClient.exe	C:\Users\admin\Desktop\MixPadClient.exe
+27832	W_TB_MS.exe	D:\1-ORVIBO\4-Utility class\W_TB_MS\W_TB_MS\bin\Debug\net8.0-windows\W_TB_MS.exe

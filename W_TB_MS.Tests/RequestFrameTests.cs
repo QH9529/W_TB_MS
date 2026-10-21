@@ -60,4 +60,17 @@ public class RequestFrameTests
 
         Assert.Equal(new byte[] { 0xF1, 0x51, 0x04, 0x75, 0x95, 0x00, 0x06, 0x8D, 0xAC }, frame);
     }
+
+    [Fact]
+    public void BuildWriteMultipleRegistersFrame_MatchesProtocolSyncTimeExample()
+    {
+        // 协议示例：F1 53 10 9C AB 00 04 08 AF 80 65 2E 00 00 00 00 83 58
+        byte[] frame = ModbusRtuClient.BuildWriteMultipleRegistersFrame(
+            0x53, 0xF1, 40107, new ushort[] { 0xAF80, 0x652E, 0x0000, 0x0000 });
+
+        Assert.Equal(18, frame.Length);
+        Assert.Equal(
+            new byte[] { 0xF1, 0x53, 0x10, 0x9C, 0xAB, 0x00, 0x04, 0x08, 0xAF, 0x80, 0x65, 0x2E, 0x00, 0x00, 0x00, 0x00, 0x83, 0x58 },
+            frame);
+    }
 }

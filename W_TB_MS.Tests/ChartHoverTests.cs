@@ -115,6 +115,32 @@ public class ChartHoverTests
     }
 
     [Fact]
+    public void FormatParameterValue_KeepsTwoDecimalsForHundredthsScale()
+    {
+        // 40701 热水器出水温度：传输值 = 实际值 × 100，6500 应为 65.00℃
+        Assert.Equal("65.00", MainForm.FormatParameterValue(40701, 6500));
+    }
+
+    [Theory]
+    [InlineData(20060, 1, "1 / 打开")]                                  // 风盘1 阀开关
+    [InlineData(20073, 403, "40.3")]                                    // 风盘1 温度：传输值 = 实际值 × 10
+    [InlineData(20079, 0x00AC, "172 / 自研交流风盘型号")]                // 风盘1 风盘型号
+    [InlineData(20071, 0, "0")]                                         // 风盘1 CO2 浓度
+    public void FormatParameterValue_DecodesFan4GTemplate(ushort address, ushort rawValue, string expected)
+    {
+        Assert.Equal(expected, MainForm.FormatParameterValue(address, rawValue));
+    }
+
+    [Fact]
+    public void FormatOnlineBitmap_ListsOnlineDevicesFromBits1To15()
+    {
+        Assert.Equal("0x0000 / 在线风盘：无", MainForm.FormatOnlineBitmap(0x0000, "风盘"));
+        Assert.Equal("0x0001 / 在线风盘：无", MainForm.FormatOnlineBitmap(0x0001, "风盘")); // BIT0 保留
+        Assert.Equal("0x0006 / 在线风盘：1、2", MainForm.FormatOnlineBitmap(0x0006, "风盘")); // BIT1=1号, BIT2=2号
+        Assert.Equal("0x8000 / 在线分集水器：15", MainForm.FormatOnlineBitmap(0x8000, "分集水器"));
+    }
+
+    [Fact]
     public void CanRecordCurveSample_RequiresEveryCurrentRegister()
     {
         var values = MainForm.RequiredCurveSampleAddresses.ToDictionary(address => address, _ => (ushort)0);

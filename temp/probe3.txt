@@ -1,0 +1,30 @@
+﻿=== services (W_Series / TB / virtual) ===
+cht4vbd | @cht4vx64.inf,%cht4vbd.generic%;Chelsio Virtual Bus Driver | \SystemRoot\System32\drivers\cht4vx64.sys
+iagpio | @iagpio.inf,%iagpio.SVCDESC%;Intel Serial IO GPIO Controller Driver | \SystemRoot\System32\drivers\iagpio.sys
+iai2c | @iai2c.inf,%iai2c.SVCDESC%;Intel(R) Serial IO I2C Host Controller | \SystemRoot\System32\drivers\iai2c.sys
+iaLPSS2i_GPIO2 | @iaLPSS2i_GPIO2_SKL.inf,%iaLPSS2i_GPIO2.SVCDESC%;Intel(R) Serial IO GPIO Driver v2 | \SystemRoot\System32\drivers\iaLPSS2i_GPIO2.sys
+iaLPSS2i_GPIO2_BXT_P | @iaLPSS2i_GPIO2_BXT_P.inf,%iaLPSS2i_GPIO2_BXT_P.SVCDESC%;Intel(R) Serial IO GPIO Driver v2 | \SystemRoot\System32\drivers\iaLPSS2i_GPIO2_BXT_P.sys
+iaLPSS2i_GPIO2_CNL | @iaLPSS2i_GPIO2_CNL.inf,%iaLPSS2i_GPIO2_CNL.SVCDESC%;Intel(R) Serial IO GPIO Driver v2 | \SystemRoot\System32\drivers\iaLPSS2i_GPIO2_CNL.sys
+iaLPSS2i_GPIO2_GLK | @iaLPSS2i_GPIO2_GLK.inf,%iaLPSS2i_GPIO2_GLK.SVCDESC%;Intel(R) Serial IO GPIO Driver v2 | \SystemRoot\System32\drivers\iaLPSS2i_GPIO2_GLK.sys
+iaLPSS2i_I2C | @iaLPSS2i_I2C_SKL.inf,%iaLPSS2i_I2C.SVCDESC%;Intel(R) Serial IO I2C Driver v2 | \SystemRoot\System32\drivers\iaLPSS2i_I2C.sys
+iaLPSS2i_I2C_BXT_P | @iaLPSS2i_I2C_BXT_P.inf,%iaLPSS2i_I2C_BXT_P.SVCDESC%;Intel(R) Serial IO I2C Driver v2 | \SystemRoot\System32\drivers\iaLPSS2i_I2C_BXT_P.sys
+iaLPSS2i_I2C_CNL | @iaLPSS2i_I2C_CNL.inf,%iaLPSS2i_I2C_CNL.SVCDESC%;Intel(R) Serial IO I2C Driver v2 | \SystemRoot\System32\drivers\iaLPSS2i_I2C_CNL.sys
+iaLPSS2i_I2C_GLK | @iaLPSS2i_I2C_GLK.inf,%iaLPSS2i_I2C_GLK.SVCDESC%;Intel(R) Serial IO I2C Driver v2 | \SystemRoot\System32\drivers\iaLPSS2i_I2C_GLK.sys
+iaLPSSi_GPIO | @ialpssi_gpio.inf,%iaLPSSi_GPIO.SVCDESC%;Intel(R) Serial IO GPIO Controller Driver | \SystemRoot\System32\drivers\iaLPSSi_GPIO.sys
+iaLPSSi_I2C | @ialpssi_i2c.inf,%iaLPSSi_I2C.SVCDESC%;Intel(R) Serial IO I2C Controller Driver | \SystemRoot\System32\drivers\iaLPSSi_I2C.sys
+NdisVirtualBus | @%SystemRoot%\System32\drivers\NdisVirtualBus.sys,-200 | \SystemRoot\System32\drivers\NdisVirtualBus.sys
+SerCx | Serial UART Support Library | system32\drivers\SerCx.sys
+SerCx2 | Serial UART Support Library | system32\drivers\SerCx2.sys
+Serial | @msports.inf,%Serial.SVCDESC%;串行端口驱动程序 | \SystemRoot\System32\drivers\serial.sys
+sermouse | @msmouse.inf,%sermouse.SvcDesc%;Serial Mouse Driver | \SystemRoot\System32\drivers\sermouse.sys
+usbser | @usbser.inf,%UsbSerial.DriverDesc%;Microsoft USB 串行驱动程序 | \SystemRoot\System32\drivers\usbser.sys
+vdrvroot | @vdrvroot.inf,%vdrvroot_svcdesc%;Microsoft Virtual Drive Enumerator | System32\drivers\vdrvroot.sys
+vhf | @hidvhf.inf,%VhfService%;Virtual HID Framework (VHF) Driver | \SystemRoot\System32\drivers\vhf.sys
+ViGEmBus | @oem51.inf,%ViGEmBus.SVCDESC%;Nefarius Virtual Gamepad Emulation Service | \SystemRoot\System32\drivers\ViGEmBus.sys
+vmbus | @wvmbus.inf,%vmbus.SVCDESC%;Virtual Machine Bus | System32\drivers\vmbus.sys
+vpci | @wvpci.inf,%vpci.SVCDESC%;Microsoft Hyper-V Virtual PCI Bus | System32\drivers\vpci.sys
+WacomPen | @hiddigi.inf,%WacomPen.SVCDESC%;Wacom Serial Pen HID Driver | \SystemRoot\System32\drivers\wacompen.sys
+=== ROOT\DEVICE enum (virtual serial class) ===
+ROOT
+=== APPDATA configs ===
+C:\Users\admin\AppData\Local\W_TB_MS

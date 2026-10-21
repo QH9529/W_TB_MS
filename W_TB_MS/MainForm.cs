@@ -22,7 +22,18 @@ namespace W_TB_MS
         private readonly Dictionary<(ushort Address, int Bit), int> _bitRowMap = new();
         private readonly HashSet<int> _groupRows = new(); // 分组标题行索引
         private readonly Dictionary<int, bool> _groupCollapsed = new(); // 分组是否折叠
+        private readonly HashSet<int> _groupHidden = new(); // 因未检测到从机设备而整组隐藏
         private bool _writeInProgress;
+
+        // --- 外机-4G 从机设备（风盘/分集水器）：仅在检测到在线时才展示并轮询 ---
+        private readonly Dictionary<int, int> _fan4GGroupRows = new();      // 风盘序号 -> 分组标题行索引
+        private readonly Dictionary<int, int> _manifoldGroupRows = new();   // 分集水器序号 -> 分组标题行索引
+        private int _onlineFanMask;         // bit n = 风盘 n 在线（bit0 保留）
+        private int _onlineManifoldMask;    // bit n = n 号分集水器在线（bit0 保留）
+        private bool _fan4GOnlineKnown;     // 是否已从设备读到 21017 在线位图
+        private bool _manifoldOnlineKnown;  // 是否已从设备读到 21016 在线位图
+        private bool _showUndetectedDevices; // 是否展示未检测到的风盘/分集水器分组
+        private CheckBox chkShowUndetectedDevices = null!;
 
         // --- 实时曲线 ---
         private const int GridColumnsTotalWidth = 434;   // 参数、数值、单位、地址、属性、操作列总宽度
@@ -57,11 +68,59 @@ namespace W_TB_MS
         private Button btnToggleBitPanel = null!;
         private TreeView numericSelector = null!;
         private TreeView bitSelector = null!;
+        private Panel numericSelectorHost = null!;
+        private Panel bitSelectorHost = null!;
+        private TextBox numericSearchBox = null!;
+        private TextBox bitSearchBox = null!;
+
+        // 曲线勾选的权威状态：搜索过滤会重建选择树，勾选状态不能依赖节点是否还在树上。
+        private readonly HashSet<ushort> _checkedNumericAddresses = new();
+        private readonly HashSet<(ushort Address, int Bit)> _checkedBitCurves = new();
+        private bool _curveSelectionDefaultsApplied;
+
+        // 两个搜索框共用同一关键字，互相赋值时抑制事件回环。
+        private bool _syncingCurveSearch;
         private readonly Dictionary<ushort, ScottPlot.IPlottable> _numericCurvePlottables = new();
         private readonly Dictionary<ushort, List<double>> _numericCurveData = new();
         private readonly Dictionary<(ushort Address, int Bit), ScottPlot.IPlottable> _bitCurvePlottables = new();
         // 每次采样保存全部8个BIT寄存器的完整16位原始值，与曲线是否勾选无关。
         private readonly Dictionary<ushort, List<ushort>> _allBitRegisterData = new();
+
+        // ===== 设备侧曲线（外机-4G 风盘 / 地暖分集水器）=====
+        // 未在线风盘的模板区不参与轮询（BuildPollBlocks 只为在线风盘追加请求块），
+        // 若把它们写进静态 NumericCurveDefinitions，CanRecordCurveSample 会因为读不到地址
+        // 而让整条样本永远无法落库——所有曲线一起停摆。因此这里按"已检测到在线"的设备
+        // 单独维护定义：数值曲线采样缺失时填 NaN 断开，BIT 曲线则沿用整条对齐策略
+        //（分集水器 21001~21015 本就在基础轮询块内，正常总能读到）。
+        private readonly List<NumericCurveDefinition> _deviceNumericDefinitions = new();
+        private readonly List<BitCurveDefinition> _deviceBitDefinitions = new();
+
+        // 重建选择树时抑制 AfterCheck 回调（此时勾选状态由代码批量设置，不应触发绘图）。
+        private bool _syncingCurveChecks;
+
+        /// <summary>风盘曲线分组名。</summary>
+        internal const string FanCurveGroupName = "风盘（内机）";
+
+        /// <summary>地暖（分集水器）曲线分组名。</summary>
+        internal const string ManifoldCurveGroupName = "地暖（分集水器）";
+
+        /// <summary>分集水器状态字里 1~8 号阀门各占一位。</summary>
+        private const int ManifoldValveCount = 8;
+
+        /// <summary>
+        /// 外机-4G 风盘模板里适合画曲线的连续量（偏移见 RegisterMap.FAN_4G_*_OFFSET）。
+        /// 温度是 ×10 的有符号量（协议：-100～100℃，精度 0.1）。
+        /// </summary>
+        private static readonly (ushort Offset, string Name, string Unit, NumericCurveValueKind Kind)[] FanCurveItems =
+        {
+            (RegisterMap.FAN_4G_TEMPERATURE_OFFSET, "温度", "℃", NumericCurveValueKind.SignedTenths),
+            (RegisterMap.FAN_4G_HUMIDITY_OFFSET, "湿度", "%", NumericCurveValueKind.Unsigned),
+            (RegisterMap.FAN_4G_CO2_OFFSET, "CO2浓度", "ppm", NumericCurveValueKind.Unsigned),
+            (RegisterMap.FAN_4G_PM25_OFFSET, "PM2.5浓度", "μg/m³", NumericCurveValueKind.Unsigned),
+            (RegisterMap.FAN_4G_SPEED_OFFSET, "风盘风速", "%", NumericCurveValueKind.Unsigned),
+            (RegisterMap.FAN_4G_FRESH_AIR_OFFSET, "新风风速", "%", NumericCurveValueKind.Unsigned)
+        };
+
         // 上下分区 X 轴联动：统一跟随标志 + 防止同步递归。
         private bool _followCurrentTime = true;
         private bool _syncingChartXAxes;
@@ -151,8 +210,15 @@ namespace W_TB_MS
             (0x04, 30001, 12),
             (0x04, 30101, 10),
             (0x04, 30201, 42),
+            (0x04, 30301, 4),      // 本地故障记录读取流程头
             (0x03, 40001, 12),
-            (0x03, 40201, 39), (0x03, 40301, 24)
+            (0x03, 40201, 39), (0x03, 40301, 24),
+            (0x03, 40701, 3),      // 用户应用层 RAM 段（热水器数据）
+            (0x03, 40801, 2),      // Flash：压缩机累计运行时长
+            (0x03, 40851, 8),      // Flash：热水杀菌完成时间 + 风机滤网清洁时间（各 4 寄存器 UNIX64）
+            (0x03, 40401, 2),      // 单板产测密码段：产测/工厂产测标志
+            (0x03, 40501, 27),     // 读写信息段：IMEI(9) + 室外机激活 + MD5(8) + 单机并联模式(9)
+            (0x04, 21001, 17)      // 外机-4G 分集水器状态 + 分集水器/风盘在线状态
         };
 
         // 某些旧设备拒绝读取较大的连续区间时，回退到原始分块。
@@ -161,10 +227,35 @@ namespace W_TB_MS
             (0x04, 30001, 4), (0x04, 30005, 4), (0x04, 30009, 4),
             (0x04, 30101, 6), (0x04, 30201, 26), (0x04, 30226, 3),
             (0x04, 30107, 4), (0x04, 30229, 1), (0x04, 30231, 12),
-            (0x03, 40001, 12), (0x03, 40201, 39), (0x03, 40301, 24)
+            (0x04, 30301, 4),
+            (0x03, 40001, 12), (0x03, 40201, 39), (0x03, 40301, 24),
+            (0x03, 40701, 3), (0x03, 40801, 2), (0x03, 40851, 8),
+            (0x03, 40401, 2), (0x03, 40501, 27)
         };
 
-        private sealed record BitCurveDefinition(
+        /// <summary>
+        /// 在基础轮询块之后追加"已检测到在线"的风盘模板块。
+        /// 风盘模板区每台占 21 个寄存器（20000+60×n ~ +20），只有在线风盘才请求，
+        /// 避免为未接入的 14 台设备白白占用总线时间。
+        /// </summary>
+        private List<(byte FunctionCode, ushort StartAddress, ushort Quantity)> BuildPollBlocks(
+            IReadOnlyList<(byte FunctionCode, ushort StartAddress, ushort Quantity)> baseBlocks)
+        {
+            var blocks = new List<(byte FunctionCode, ushort StartAddress, ushort Quantity)>(
+                baseBlocks.Count + RegisterMap.FAN_4G_MAX_COUNT);
+            blocks.AddRange(baseBlocks);
+
+            int mask = Volatile.Read(ref _onlineFanMask);
+            for (int fan = 1; fan <= RegisterMap.FAN_4G_MAX_COUNT; fan++)
+            {
+                if ((mask & (1 << fan)) == 0)
+                    continue;
+                blocks.Add((0x04, RegisterMap.GetFan4GBaseAddress(fan), RegisterMap.FAN_4G_TEMPLATE_COUNT));
+            }
+            return blocks;
+        }
+
+        internal sealed record BitCurveDefinition(
             ushort Address,
             int Bit,
             string GroupName,
@@ -173,7 +264,7 @@ namespace W_TB_MS
             string OneText,
             bool SelectedByDefault = false);
 
-        private enum NumericCurveValueKind
+        internal enum NumericCurveValueKind
         {
             Unsigned,
             SignedTenths,
@@ -182,7 +273,7 @@ namespace W_TB_MS
             UInt32LowHigh
         }
 
-        private sealed record NumericCurveDefinition(
+        internal sealed record NumericCurveDefinition(
             ushort Address,
             string GroupName,
             string Name,
@@ -290,6 +381,307 @@ namespace W_TB_MS
 
         internal static IReadOnlyList<ushort> NumericCurveAddresses =>
             NumericCurveDefinitions.Select(item => item.Address).ToArray();
+
+        /// <summary>实际参与采样与绘图的数值曲线 = 主机参数 + 在线风盘参数。</summary>
+        private IReadOnlyList<NumericCurveDefinition> ActiveNumericCurveDefinitions =>
+            _deviceNumericDefinitions.Count == 0
+                ? NumericCurveDefinitions
+                : NumericCurveDefinitions.Concat(_deviceNumericDefinitions).ToArray();
+
+        /// <summary>实际参与采样与绘图的 BIT 曲线 = 主机状态/故障位 + 在线分集水器阀门。</summary>
+        private IReadOnlyList<BitCurveDefinition> ActiveBitCurveDefinitions =>
+            _deviceBitDefinitions.Count == 0
+                ? BitCurveDefinitions
+                : BitCurveDefinitions.Concat(_deviceBitDefinitions).ToArray();
+
+        /// <summary>实际需要采样的 BIT 寄存器地址（含在线分集水器状态字）。</summary>
+        private IReadOnlyList<ushort> ActiveBitCurveAddresses =>
+            _deviceBitDefinitions.Count == 0
+                ? BitCurveRegisterAddresses
+                : BitCurveRegisterAddresses
+                    .Concat(_deviceBitDefinitions.Select(item => item.Address))
+                    .Distinct()
+                    .ToArray();
+
+        /// <summary>按在线位图生成风盘（内机）数值曲线定义，只为在线风盘生成。</summary>
+        internal static List<NumericCurveDefinition> BuildFanCurveDefinitions(int fanMask)
+        {
+            var definitions = new List<NumericCurveDefinition>();
+            for (int fan = 1; fan <= RegisterMap.FAN_4G_MAX_COUNT; fan++)
+            {
+                if ((fanMask & (1 << fan)) == 0)
+                    continue;
+                string prefix = $"风盘{fan}（0x{RegisterMap.GetFan4GDeviceAddress(fan):X2}）· ";
+                foreach (var item in FanCurveItems)
+                {
+                    definitions.Add(new NumericCurveDefinition(
+                        RegisterMap.GetFan4GAddress(fan, item.Offset),
+                        FanCurveGroupName,
+                        prefix + item.Name,
+                        item.Unit,
+                        item.Kind));
+                }
+            }
+            return definitions;
+        }
+
+        /// <summary>
+        /// 按在线位图生成地暖（分集水器）BIT 曲线定义：
+        /// 分集水器状态字（21001+n）的 BIT0~BIT7 对应 1~8 号阀门开关。
+        /// </summary>
+        internal static List<BitCurveDefinition> BuildManifoldCurveDefinitions(int manifoldMask)
+        {
+            var definitions = new List<BitCurveDefinition>();
+            for (int manifold = 1; manifold <= RegisterMap.MANIFOLD_MAX_COUNT; manifold++)
+            {
+                if ((manifoldMask & (1 << manifold)) == 0)
+                    continue;
+                ushort address = RegisterMap.GetManifold4GStatusAddress(manifold);
+                for (int valve = 0; valve < ManifoldValveCount; valve++)
+                {
+                    definitions.Add(new BitCurveDefinition(
+                        address,
+                        valve,
+                        ManifoldCurveGroupName,
+                        $"分集水器{manifold} · {valve + 1}号阀门",
+                        "关",
+                        "开"));
+                }
+            }
+            return definitions;
+        }
+
+        /// <summary>
+        /// 按在线位图重建设备侧曲线定义：风盘（内机）走数值曲线，地暖阀门走 BIT 曲线。
+        /// </summary>
+        private void RebuildDeviceCurveDefinitions(int fanMask, int manifoldMask)
+        {
+            _deviceNumericDefinitions.Clear();
+            _deviceNumericDefinitions.AddRange(BuildFanCurveDefinitions(fanMask));
+
+            _deviceBitDefinitions.Clear();
+            _deviceBitDefinitions.AddRange(BuildManifoldCurveDefinitions(manifoldMask));
+        }
+
+        /// <summary>
+        /// 为新出现的设备曲线准备数据序列，历史段补齐到当前采样长度：
+        /// 数值曲线填 NaN（ScottPlot 会断开该段），BIT 曲线填 0。
+        /// 长度必须与 _timeData 一致，否则绘图时 X/Y 长度不匹配会抛异常。
+        /// </summary>
+        private void EnsureDeviceCurveSeries()
+        {
+            foreach (NumericCurveDefinition definition in _deviceNumericDefinitions)
+            {
+                if (_numericCurveData.ContainsKey(definition.Address))
+                    continue;
+                var series = new List<double>(_timeData.Count);
+                for (int index = 0; index < _timeData.Count; index++)
+                    series.Add(double.NaN);
+                _numericCurveData[definition.Address] = series;
+            }
+
+            foreach (BitCurveDefinition definition in _deviceBitDefinitions)
+            {
+                if (_allBitRegisterData.ContainsKey(definition.Address))
+                    continue;
+                var series = new List<ushort>(_timeData.Count);
+                for (int index = 0; index < _timeData.Count; index++)
+                    series.Add(0);
+                _allBitRegisterData[definition.Address] = series;
+            }
+        }
+
+        /// <summary>
+        /// 在线位图变化时刷新设备侧曲线：重建定义 → 补数据序列 → 重建两个选择树。
+        /// 已经勾选的主机曲线按地址恢复勾选，新出现的设备曲线保持不勾选
+        ///（避免设备一上线就把曲线区刷满）。
+        /// </summary>
+        private void RefreshDeviceCurves(int fanMask, int manifoldMask)
+        {
+            RebuildDeviceCurveDefinitions(fanMask, manifoldMask);
+            EnsureDeviceCurveSeries();
+            RebuildNumericSelectorTree();
+            RebuildBitSelectorTree();
+        }
+
+        /// <summary>
+        /// 重建参数曲线选择树：勾选状态从权威集合恢复，并按搜索关键字过滤。
+        /// 过滤靠"不添加未命中节点"实现（TreeView 节点没有 Visible 属性）。
+        /// </summary>
+        private void RebuildNumericSelectorTree()
+        {
+            if (numericSelector == null)
+                return;
+
+            string keyword = (numericSearchBox?.Text ?? string.Empty).Trim();
+            bool Matches(string text) =>
+                keyword.Length == 0 || text.Contains(keyword, StringComparison.CurrentCultureIgnoreCase);
+
+            _syncingCurveChecks = true;
+            numericSelector.BeginUpdate();
+            try
+            {
+                numericSelector.Nodes.Clear();
+                foreach (var group in ActiveNumericCurveDefinitions
+                             .Where(item => item.Address != 30233)
+                             .GroupBy(item => item.GroupName))
+                {
+                    bool groupMatched = Matches(group.Key);
+                    var groupNode = new TreeNode(group.Key);
+                    foreach (NumericCurveDefinition definition in group)
+                    {
+                        if (!groupMatched && !Matches(definition.Name))
+                            continue;
+                        groupNode.Nodes.Add(new TreeNode(definition.Name)
+                        {
+                            Tag = definition,
+                            Checked = _checkedNumericAddresses.Contains(definition.Address)
+                        });
+                    }
+                    if (groupNode.Nodes.Count > 0)
+                        numericSelector.Nodes.Add(groupNode);
+                }
+                foreach (TreeNode node in numericSelector.Nodes)
+                    node.Expand();
+            }
+            finally
+            {
+                numericSelector.EndUpdate();
+                _syncingCurveChecks = false;
+            }
+        }
+
+        /// <summary>重建 BIT 曲线选择树（状态/故障两组 + 在线地暖阀门），同样按关键字过滤。</summary>
+        private void RebuildBitSelectorTree()
+        {
+            if (bitSelector == null)
+                return;
+
+            string keyword = (bitSearchBox?.Text ?? string.Empty).Trim();
+            bool Matches(string text) =>
+                keyword.Length == 0 || text.Contains(keyword, StringComparison.CurrentCultureIgnoreCase);
+
+            _syncingCurveChecks = true;
+            bitSelector.BeginUpdate();
+            try
+            {
+                bitSelector.Nodes.Clear();
+                foreach (var group in new[]
+                         {
+                             (Name: "状态曲线", Items: ActiveBitCurveDefinitions.Where(IsStatusCurve)),
+                             (Name: "故障曲线", Items: ActiveBitCurveDefinitions.Where(item => !IsStatusCurve(item)))
+                         })
+                {
+                    bool rootMatched = Matches(group.Name);
+                    var groupNode = new TreeNode(group.Name);
+                    foreach (var definitionGroup in group.Items.GroupBy(item => new { item.Address, item.GroupName }))
+                    {
+                        bool groupMatched = rootMatched || Matches(definitionGroup.Key.GroupName);
+                        var subNode = new TreeNode(definitionGroup.Key.GroupName);
+                        foreach (BitCurveDefinition definition in definitionGroup)
+                        {
+                            if (!groupMatched && !Matches(definition.Name))
+                                continue;
+                            subNode.Nodes.Add(new TreeNode(definition.Name)
+                            {
+                                Tag = definition,
+                                Checked = _checkedBitCurves.Contains((definition.Address, definition.Bit))
+                            });
+                        }
+                        if (subNode.Nodes.Count > 0)
+                            groupNode.Nodes.Add(subNode);
+                    }
+                    if (groupNode.Nodes.Count > 0)
+                        bitSelector.Nodes.Add(groupNode);
+                }
+                // BIT 树是三层结构：默认只展开根组（沿用原交互，避免一次铺开几百个位）；
+                // 一旦有搜索关键字，把命中项所在层也展开，否则过滤结果看不见。
+                bool expandAllLevels = keyword.Length > 0;
+                foreach (TreeNode node in bitSelector.Nodes)
+                {
+                    node.Expand();
+                    if (!expandAllLevels)
+                        continue;
+                    foreach (TreeNode child in node.Nodes)
+                        child.Expand();
+                }
+            }
+            finally
+            {
+                bitSelector.EndUpdate();
+                _syncingCurveChecks = false;
+            }
+        }
+
+        /// <summary>首次建树前，把定义里 SelectedByDefault 的曲线登记进权威勾选集合。</summary>
+        private void InitializeCurveSelectionDefaults()
+        {
+            if (_curveSelectionDefaultsApplied)
+                return;
+            _curveSelectionDefaultsApplied = true;
+
+            foreach (NumericCurveDefinition definition in NumericCurveDefinitions)
+            {
+                if (definition.SelectedByDefault)
+                    _checkedNumericAddresses.Add(definition.Address);
+            }
+            foreach (BitCurveDefinition definition in BitCurveDefinitions)
+            {
+                if (definition.SelectedByDefault)
+                    _checkedBitCurves.Add((definition.Address, definition.Bit));
+            }
+        }
+
+        /// <summary>
+        /// 给曲线选择树套一个带搜索框的容器：搜索框占顶部，树填满剩余区域。
+        /// 显隐切换作用在容器上，否则隐藏树以后搜索框会单独留着。
+        /// </summary>
+        private static Panel WrapCurveSelector(TreeView tree, out TextBox searchBox)
+        {
+            tree.Dock = DockStyle.Fill;
+            searchBox = new TextBox
+            {
+                Dock = DockStyle.Top,
+                PlaceholderText = "搜索曲线…",
+                Font = new Font("Microsoft YaHei", 9F)
+            };
+            var host = new Panel { Dock = DockStyle.Right, Width = 220 };
+            // Dock 布局按 z-order 逆序处理：先加的树填满剩余区，后加的搜索框占顶部。
+            host.Controls.Add(tree);
+            host.Controls.Add(searchBox);
+            return host;
+        }
+
+        /// <summary>
+        /// 绑定两个搜索框：共用同一关键字，任一改动同步到另一个并刷新两棵选择树。
+        /// </summary>
+        private void BindCurveSearchBoxes()
+        {
+            void Wire(TextBox source, TextBox mirror)
+            {
+                source.TextChanged += (s, e) =>
+                {
+                    if (_syncingCurveSearch)
+                        return;
+                    _syncingCurveSearch = true;
+                    try
+                    {
+                        if (!string.Equals(mirror.Text, source.Text, StringComparison.Ordinal))
+                            mirror.Text = source.Text;
+                    }
+                    finally
+                    {
+                        _syncingCurveSearch = false;
+                    }
+                    RebuildNumericSelectorTree();
+                    RebuildBitSelectorTree();
+                };
+            }
+
+            Wire(numericSearchBox, bitSearchBox);
+            Wire(bitSearchBox, numericSearchBox);
+        }
+
 
         private static readonly IReadOnlyList<BitCurveDefinition> BitCurveDefinitions = CreateBitCurveDefinitions();
 
@@ -402,7 +794,10 @@ namespace W_TB_MS
 
         private static bool IsStatusCurve(BitCurveDefinition definition) =>
             definition.Address is 30106 or 30201 or 30229 or 40201 or 40202 or 40212
-                or RUNTIME_MODE_CURVE_ADDR or RUNTIME_MODE2_CURVE_ADDR;
+                or RUNTIME_MODE_CURVE_ADDR or RUNTIME_MODE2_CURVE_ADDR
+            // 地暖分集水器状态字（21001~21015）的 BIT0~BIT7 是阀门开关，属于状态量。
+            || definition.Address is >= RegisterMap.MANIFOLD_STATUS_START_ADDR
+                and <= RegisterMap.MANIFOLD_STATUS_END_ADDR;
 
         private static HashSet<ushort> CreateCurveSampleAddresses()
         {
@@ -648,19 +1043,23 @@ namespace W_TB_MS
             _toolTip.SetToolTip(btnToggleRegisterDetails, "切换显示左侧表格的寄存器地址和属性列");
             panelTop.Controls.Add(btnToggleRegisterDetails);
 
-            // 折叠/展开某分组
-            void ToggleGroup(int groupIdx, bool collapse)
+            // 外机-4G 的风盘/分集水器：默认只显示设备实际在线（已配置）的那些，
+            // 勾选后可把未检测到的分组也显示出来（保持折叠，便于逐台排查）。
+            chkShowUndetectedDevices = new CheckBox
             {
-                _groupCollapsed[groupIdx] = collapse;
-                string name = dgvData.Rows[groupIdx].Cells[0].Value?.ToString() ?? "";
-                string clean = name.TrimStart('▶', '▼', ' ');
-                dgvData.Rows[groupIdx].Cells[0].Value = (collapse ? "▶ " : "▼ ") + clean;
-                for (int i = groupIdx + 1; i < dgvData.Rows.Count; i++)
-                {
-                    if (_groupRows.Contains(i)) break;
-                    dgvData.Rows[i].Visible = !collapse;
-                }
-            }
+                Text = "显示未检测到的风盘/分集水器",
+                Location = new Point(925, 52),
+                AutoSize = true,
+                Font = new Font("Microsoft YaHei", 9),
+                Checked = false
+            };
+            chkShowUndetectedDevices.CheckedChanged += (s, e) => SetShowUndetectedDevices(chkShowUndetectedDevices.Checked);
+            _toolTip.SetToolTip(chkShowUndetectedDevices,
+                "外机-4G 区按 21017/21016 在线位图显示：勾选后同时列出未检测到的风盘/分集水器分组");
+            panelTop.Controls.Add(chkShowUndetectedDevices);
+
+            // 折叠/展开某分组
+            void ToggleGroup(int groupIdx, bool collapse) => SetGroupCollapsed(groupIdx, collapse);
 
             // 点击分组行任意位置触发展开/折叠
             dgvData.CellClick += (s, e) =>
@@ -777,30 +1176,16 @@ namespace W_TB_MS
 
             numericSelector = new TreeView
             {
-                Dock = DockStyle.Right,
-                Width = 220,
+                Dock = DockStyle.Fill,
                 CheckBoxes = true,
                 HideSelection = false,
                 ShowLines = true,
                 ShowPlusMinus = true,
                 Font = new Font("Microsoft YaHei", 9F)
             };
-            foreach (var group in NumericCurveDefinitions.GroupBy(item => item.GroupName))
-            {
-                var groupNode = new TreeNode(group.Key);
-                foreach (NumericCurveDefinition definition in group.Where(item => item.Address != 30233))
-                {
-                    groupNode.Nodes.Add(new TreeNode(definition.Name)
-                    {
-                        Tag = definition,
-                        Checked = definition.SelectedByDefault
-                    });
-                }
-                if (groupNode.Nodes.Count > 0)
-                    numericSelector.Nodes.Add(groupNode);
-            }
-            foreach (TreeNode node in numericSelector.Nodes)
-                node.Expand();
+            // 曲线勾选项按在线位图动态生成（含风盘/地暖），首次建树先登记默认勾选。
+            InitializeCurveSelectionDefaults();
+            RebuildNumericSelectorTree();
 
             var btnToggleCurveSelector = new Button
             {
@@ -814,33 +1199,55 @@ namespace W_TB_MS
             };
             btnToggleCurveSelector.Click += (s, e) =>
             {
-                // 上下两个分区的曲线选择器同步显示/隐藏。
-                bool showSelector = ApplyTreeSelectorToggle(numericSelector, bitSelector);
+                // 上下两个分区的曲线选择区（含搜索框）同步显示/隐藏。
+                bool showSelector = ApplyTreeSelectorToggle(numericSelectorHost, bitSelectorHost);
                 btnToggleCurveSelector.Text = showSelector ? "隐藏曲线选择" : "显示曲线选择";
             };
             _toolTip.SetToolTip(btnToggleCurveSelector, "切换参数曲线/BIT曲线右侧选择区域");
             panelTop.Controls.Add(btnToggleCurveSelector);
 
-            bool updatingNumericChecks = false;
             numericSelector.AfterCheck += (s, e) =>
             {
-                if (updatingNumericChecks || e.Node is not TreeNode checkedNode)
+                if (_syncingCurveChecks || e.Node is not TreeNode checkedNode)
                     return;
+
+                // 勾选分组节点时递归传播到所有后代叶子，否则深层曲线不会创建。
+                void ApplyToNumericDescendants(TreeNode node, bool checkedState)
+                {
+                    foreach (TreeNode child in node.Nodes)
+                    {
+                        child.Checked = checkedState;
+                        if (child.Tag is NumericCurveDefinition childDefinition)
+                        {
+                            if (child.Checked)
+                                _checkedNumericAddresses.Add(childDefinition.Address);
+                            else
+                                _checkedNumericAddresses.Remove(childDefinition.Address);
+                            SetNumericCurveVisibility(childDefinition, child.Checked);
+                        }
+                        ApplyToNumericDescendants(child, checkedState);
+                    }
+                }
 
                 if (checkedNode.Tag is NumericCurveDefinition definition)
                 {
+                    if (checkedNode.Checked)
+                        _checkedNumericAddresses.Add(definition.Address);
+                    else
+                        _checkedNumericAddresses.Remove(definition.Address);
                     SetNumericCurveVisibility(definition, checkedNode.Checked);
                 }
                 else
                 {
-                    updatingNumericChecks = true;
-                    foreach (TreeNode child in checkedNode.Nodes)
+                    _syncingCurveChecks = true;
+                    try
                     {
-                        child.Checked = checkedNode.Checked;
-                        if (child.Tag is NumericCurveDefinition childDefinition)
-                            SetNumericCurveVisibility(childDefinition, child.Checked);
+                        ApplyToNumericDescendants(checkedNode, checkedNode.Checked);
                     }
-                    updatingNumericChecks = false;
+                    finally
+                    {
+                        _syncingCurveChecks = false;
+                    }
                 }
 
                 if (_followCurrentTime)
@@ -907,7 +1314,9 @@ namespace W_TB_MS
 
             var numericChartContent = new Panel { Dock = DockStyle.Fill };
             numericChartContent.Controls.Add(formsPlot);
-            numericChartContent.Controls.Add(numericSelector);
+            // 选择树外面套一层容器，顶部放共用的搜索框。
+            numericSelectorHost = WrapCurveSelector(numericSelector, out numericSearchBox);
+            numericChartContent.Controls.Add(numericSelectorHost);
 
             var curveToolbar = new FlowLayoutPanel
             {
@@ -940,6 +1349,8 @@ namespace W_TB_MS
                 FlatStyle = FlatStyle.Flat,
                 Size = new Size(110, 28),
                 Font = new Font("Microsoft YaHei", 9F),
+                // 与 curveToolbar 里其它按钮保持同一 Margin：默认 (3,3,3,3) 会让它比同排按钮低 3px。
+                Margin = new Padding(0, 0, 4, 0),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left
             };
             btnToggleBitPanel.Click += (s, e) =>
@@ -1003,44 +1414,20 @@ namespace W_TB_MS
 
             bitSelector = new TreeView
             {
-                Dock = DockStyle.Right,
-                Width = 220,
+                Dock = DockStyle.Fill,
                 CheckBoxes = true,
                 HideSelection = false,
                 ShowLines = true,
                 ShowPlusMinus = true,
                 Font = new Font("Microsoft YaHei", 9F)
             };
-            // 状态曲线在前、故障曲线在后，各为一棵根节点组，勾选状态互不影响。
-            foreach (var group in new[]
-                     {
-                         (Name: "状态曲线", Items: StatusCurveDefinitions),
-                         (Name: "故障曲线", Items: FaultCurveDefinitions)
-                     })
-            {
-                var groupNode = new TreeNode(group.Name);
-                foreach (var definitionGroup in group.Items.GroupBy(item => new { item.Address, item.GroupName }))
-                {
-                    var subNode = new TreeNode(definitionGroup.Key.GroupName);
-                    foreach (BitCurveDefinition definition in definitionGroup)
-                    {
-                        subNode.Nodes.Add(new TreeNode(definition.Name)
-                        {
-                            Tag = definition,
-                            Checked = definition.SelectedByDefault
-                        });
-                    }
-                    groupNode.Nodes.Add(subNode);
-                }
-                bitSelector.Nodes.Add(groupNode);
-            }
-            foreach (TreeNode node in bitSelector.Nodes)
-                node.Expand();
+            // 状态曲线在前、故障曲线在后，各为一棵根节点组，勾选状态互不影响；
+            // 地暖阀门按在线位图追加到状态曲线组。
+            RebuildBitSelectorTree();
 
-            bool updatingBitChecks = false;
             bitSelector.AfterCheck += (s, e) =>
             {
-                if (updatingBitChecks || e.Node is not TreeNode checkedNode)
+                if (_syncingCurveChecks || e.Node is not TreeNode checkedNode)
                     return;
 
                 // 树为三层结构（状态/故障根组 → 寄存器分组 → 曲线叶子），
@@ -1051,16 +1438,26 @@ namespace W_TB_MS
                     {
                         child.Checked = checkedState;
                         if (child.Tag is BitCurveDefinition childDefinition)
+                        {
+                            if (child.Checked)
+                                _checkedBitCurves.Add((childDefinition.Address, childDefinition.Bit));
+                            else
+                                _checkedBitCurves.Remove((childDefinition.Address, childDefinition.Bit));
                             SetBitCurveVisibility(childDefinition, child.Checked);
+                        }
                         ApplyToDescendants(child, checkedState);
                     }
                 }
 
-                updatingBitChecks = true;
+                _syncingCurveChecks = true;
                 try
                 {
                     if (checkedNode.Tag is BitCurveDefinition definition)
                     {
+                        if (checkedNode.Checked)
+                            _checkedBitCurves.Add((definition.Address, definition.Bit));
+                        else
+                            _checkedBitCurves.Remove((definition.Address, definition.Bit));
                         SetBitCurveVisibility(definition, checkedNode.Checked);
                     }
                     else
@@ -1070,7 +1467,7 @@ namespace W_TB_MS
                 }
                 finally
                 {
-                    updatingBitChecks = false;
+                    _syncingCurveChecks = false;
                 }
 
                 if (_followCurrentTime)
@@ -1081,7 +1478,10 @@ namespace W_TB_MS
 
             var bitPanel = new Panel { Dock = DockStyle.Fill };
             bitPanel.Controls.Add(bitFormsPlot);
-            bitPanel.Controls.Add(bitSelector);
+            bitSelectorHost = WrapCurveSelector(bitSelector, out bitSearchBox);
+            bitPanel.Controls.Add(bitSelectorHost);
+            // 两个搜索框共用同一关键字，必须等两个容器都建好后再绑定。
+            BindCurveSearchBoxes();
             chartSplit.Panel2.Controls.Add(bitPanel);
             chartHost.Controls.Add(chartSplit);
 

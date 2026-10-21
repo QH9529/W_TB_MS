@@ -70,6 +70,9 @@ namespace W_TB_MS.Models
         public const ushort THREE_WAY_VALVE1_ADDR = 30223;
         public const ushort THREE_WAY_VALVE2_ADDR = 30224;
         public const ushort LOWER_FAN_SPEED_ADDR = 30225;
+        public const ushort HW_UPPER_TEMP_ADDR = 30226;    // 热水上温度(W135/W260/W300)
+        public const ushort HW_MID_TEMP_ADDR = 30227;      // 热水中温度(W135/W260/W300)
+        public const ushort HW_LOWER_TEMP_ADDR = 30228;    // 热水下温度(W135/W260/W300)
         public const ushort DIP_ADDRESS_STATUS_ADDR = 30229;
         public const ushort AC_VOLTAGE_ADDR = 30231;
         public const ushort AC_CURRENT_ADDR = 30232;
@@ -133,6 +136,13 @@ namespace W_TB_MS.Models
         //  保持寄存器（401xx为只写命令，其余定义段按协议读写）
         // ============================================================
 
+        /// <summary>
+        /// 按协议"保持寄存器"表的段声明返回读写属性：
+        /// 40101~40199 常用只写命令段；其余 40001~49999（常用/服务密码/工厂密码/
+        /// 单板产测密码/读写信息/4G_OTA/用户应用层 RAM/Flash 持久化）均为读写命令段。
+        /// 注意：41001~41201、42001~42100、43001~43006 虽为读写，但归属风盘/地暖/底壳
+        /// 各自从机地址，需连到对应从机方可实际生效（UI 按只读+所属设备展示）。
+        /// </summary>
         public static RegisterAccess GetAccess(ushort address)
         {
             if (address is >= 40101 and <= 40199)
@@ -141,6 +151,61 @@ namespace W_TB_MS.Models
                 return RegisterAccess.ReadWrite;
             return RegisterAccess.ReadOnly;
         }
+
+        /// <summary>
+        /// 高危写入段（协议标注读写，但误写会影响设备身份/固件/统计数据）：
+        /// 单板产测密码 40401~40499、读写信息 40501~40599、4G_OTA 40601~40699、
+        /// Flash 持久化 40801~40899。
+        /// 其中 40501~40599 在 UI 上开放写入，写入前必须二次确认；
+        /// 40601~40699 与 40801~40899 已按只读展示（见 <see cref="IsDisplayOnlyReadSegment"/>），
+        /// 本方法对它们仅保留"协议上属于高危段"这一分类语义。
+        /// </summary>
+        public static bool IsHighRiskWriteSegment(ushort address) =>
+            address is (>= 40401 and <= 40499) or (>= 40501 and <= 40599)
+                or (>= 40601 and <= 40699) or (>= 40801 and <= 40899);
+
+        /// <summary>
+        /// 协议标注"读写"、但界面按只读展示的段：
+        /// <list type="bullet">
+        /// <item>4G_OTA 40601~40699：升级流程由 4G 模块自身的升级通道驱动，人工逐包写入无意义且会导致升级失败。</item>
+        /// <item>Flash 持久化 40801~40899：累计运行时长与时间戳由热泵主机/4G 模块自己写入，人工改写会污染统计。</item>
+        /// </list>
+        /// 备注：单板产测段 40401~40499 已整体从界面移除（不显示、也不提供写入入口）。
+        /// 这些地址的 <see cref="GetAccess"/> 仍按协议返回 ReadWrite，只在界面层强制只读，
+        /// 以保证"协议属性"与"界面可操作性"两件事各自可验证。
+        /// </summary>
+        public static bool IsDisplayOnlyReadSegment(ushort address) =>
+            address is (>= 40601 and <= 40699) or (>= 40801 and <= 40899);
+
+        /// <summary>
+        /// 界面不展示的从机设备段 41101~43006，含风盘设置段(41101~41107)、风盘产测段(41201)、
+        /// 地暖控制段(42001~42100)、MixPad 网络管理段(43001~43006)。
+        /// 这些寄存器分别在风盘(0x91~0x9F)/地暖(0xA1~0xAF)/底壳(0x51~0x5F)各自从机上，
+        /// 主界面目前只能连热泵主机地址，读不到也写不了，展示出来只会误导操作。
+        /// 风盘控制段 41001~41017 保留展示（作为协议参照）。
+        /// </summary>
+        public static bool IsHiddenDeviceSegment(ushort address) =>
+            address is >= 41101 and <= 43006;
+
+        /// <summary>
+        /// 该地址是否已在界面上提供写入入口（含整段 0x10 写入的多寄存器数据块）。
+        /// 判据：协议可写 + 不是"只读展示段" + 不是已移除的产测段 + 不属于其它从机设备。
+        /// 界面行的可写性完全由本方法决定（<c>MainForm.AddReg</c> 只读判定即取它的反）。
+        /// </summary>
+        public static bool IsWritableInUi(ushort address) =>
+            GetAccess(address) != RegisterAccess.ReadOnly
+            && !IsDisplayOnlyReadSegment(address)
+            && address is not (>= 40401 and <= 40499)
+            && GetSlaveDeviceHint(address) is null;
+
+        /// <summary>该寄存器是否属于风盘/地暖/底壳从机，只能连对应从机地址访问。</summary>
+        public static string? GetSlaveDeviceHint(ushort address) => address switch
+        {
+            >= 41001 and <= 41299 => "风盘设备（从机 0x91~0x9F）",
+            >= 42001 and <= 42199 => "地暖设备（从机 0xA1~0xAF）",
+            >= 43001 and <= 43099 => "MixPad 底壳（从机 0x51~0x5F）",
+            _ => null
+        };
 
         #region --- 常用读写命令段 40001~40099 ---
         public const ushort ON_OFF_ADDR = 40001;           // 开关机: 0x0000=关, 0x0001=开
@@ -264,10 +329,13 @@ namespace W_TB_MS.Models
         public const ushort HEATER_HEAT_TIME_ADDR = 40703;   // 热水器加热时间
         #endregion
 
-        #region --- 累计运行时长段 40801~40899 ---
-        public const ushort COMP_RUNTIME_ADDR = 40801;       // 压缩机累计运行时长 (2寄存器,小时)
-        public const ushort CUSTOM_FLASH_DATA_START_ADDR = 40851;
-        public const ushort CUSTOM_FLASH_DATA_END_ADDR = 40899;
+        #region --- 累计运行时长与Flash持久化段 40801~40899 ---
+        public const ushort COMP_RUNTIME_ADDR = 40801;       // 压缩机累计运行时长 (2寄存器,小时,低16位在前)
+        public const ushort STERILIZE_DONE_TIME_START_ADDR = 40851;  // 热水杀菌完成时间 (4寄存器UNIX64,低16位在前)
+        public const ushort STERILIZE_DONE_TIME_END_ADDR = 40854;
+        public const ushort FAN_FILTER_CLEAN_TIME_START_ADDR = 40855; // 风机滤网清洁时间 (4寄存器UNIX64,低16位在前)
+        public const ushort FAN_FILTER_CLEAN_TIME_END_ADDR = 40858;
+        public const ushort CUSTOM_FLASH_DATA_END_ADDR = 40899;      // 欧瑞博自定义持久化区结束
         #endregion
 
         #region --- 风盘控制段 41001~41099 ---
@@ -327,29 +395,79 @@ namespace W_TB_MS.Models
         //  外机-4G Sheet
         // ============================================================
 
-        #region --- 风盘外机-4G参数模板 ---
+        #region --- 风盘外机-4G参数模板（V2.4: X=20000+60*n，n=0保留，n=1~15 对应 0x91~0x9F） ---
         public const ushort FAN_4G_TEMPLATE_BASE_ADDR = 20000;
-        public const ushort FAN_4G_VALVE_OFFSET = 0;
-        public const ushort FAN_4G_SPEED_OFFSET = 1;
-        public const ushort FAN_4G_FRESH_AIR_OFFSET = 2;
-        public const ushort FAN_4G_ANION_OFFSET = 3;
-        public const ushort FAN_4G_HEATER_OFFSET = 4;
-        public const ushort FAN_4G_VERTICAL_SWING_OFFSET = 5;
-        public const ushort FAN_4G_HORIZONTAL_SWING_OFFSET = 6;
-        public const ushort FAN_4G_CO2_OFFSET = 7;
-        public const ushort FAN_4G_PM25_OFFSET = 8;
-        public const ushort FAN_4G_TEMPERATURE_OFFSET = 9;
-        public const ushort FAN_4G_HUMIDITY_OFFSET = 10;
-        public const ushort FAN_4G_MODEL_OFFSET = 11;
+        public const ushort FAN_4G_TEMPLATE_STEP = 60;            // 风盘 n 的模板偏移步长
+        public const ushort FAN_4G_TEMPLATE_COUNT = 21;           // 每台风盘模板寄存器数（偏移 0~20）
+        public const int FAN_4G_MAX_COUNT = 15;                   // 最多 15 台风盘（0x91~0x9F）
+        public const ushort FAN_4G_VALVE_OFFSET = 0;              // 风盘阀开关
+        public const ushort FAN_4G_SPEED_OFFSET = 1;              // 风盘风速设置
+        public const ushort FAN_4G_FRESH_AIR_OFFSET = 2;          // 新风风速
+        public const ushort FAN_4G_ANION_OFFSET = 3;              // 负离子除菌
+        public const ushort FAN_4G_HEATER_OFFSET = 4;             // 电加热
+        public const ushort FAN_4G_VERTICAL_SWING_OFFSET = 5;     // 3D风口上下扫风
+        public const ushort FAN_4G_HORIZONTAL_SWING_OFFSET = 6;   // 3D风口左右扫风
+        // 20007~20008 预留
+        public const ushort FAN_4G_FRESH_AIR_RUNTIME_OFFSET = 9;  // 新风运行时长(h)
+        public const ushort FAN_4G_FAULT_CODE_OFFSET = 10;        // 风盘故障码
+        public const ushort FAN_4G_CO2_OFFSET = 11;               // CO2浓度 (V2.4: 20011)
+        public const ushort FAN_4G_PM25_OFFSET = 12;              // PM2.5浓度
+        public const ushort FAN_4G_TEMPERATURE_OFFSET = 13;       // 温度
+        public const ushort FAN_4G_HUMIDITY_OFFSET = 14;          // 湿度
+        public const ushort FAN_4G_HW_VERSION_OFFSET = 15;        // 硬件版本号 (2寄存器)
+        public const ushort FAN_4G_SW_VERSION_OFFSET = 17;        // 软件版本号 (2寄存器)
+        public const ushort FAN_4G_MODEL_OFFSET = 19;             // 风盘型号
+        public const ushort FAN_4G_FEATURE_SET_OFFSET = 20;       // 功能集
 
         public static ushort GetFan4GAddress(int fanIndex, ushort offset)
         {
-            if (fanIndex is < 1 or > 15)
+            if (fanIndex is < 1 or > FAN_4G_MAX_COUNT)
                 throw new ArgumentOutOfRangeException(nameof(fanIndex), "风盘序号必须在1到15之间");
-            if (offset > FAN_4G_MODEL_OFFSET)
-                throw new ArgumentOutOfRangeException(nameof(offset), "风盘参数偏移必须在0到11之间");
-            return checked((ushort)(FAN_4G_TEMPLATE_BASE_ADDR + 60 * fanIndex + offset));
+            if (offset >= FAN_4G_TEMPLATE_COUNT)
+                throw new ArgumentOutOfRangeException(nameof(offset), "风盘参数偏移必须在0到20之间");
+            return checked((ushort)(GetFan4GBaseAddress(fanIndex) + offset));
         }
+
+        /// <summary>风盘 n（1~15）模板的起始地址，即 20000 + 60 × n。</summary>
+        public static ushort GetFan4GBaseAddress(int fanIndex)
+        {
+            if (fanIndex is < 1 or > FAN_4G_MAX_COUNT)
+                throw new ArgumentOutOfRangeException(nameof(fanIndex), "风盘序号必须在1到15之间");
+            return checked((ushort)(FAN_4G_TEMPLATE_BASE_ADDR + FAN_4G_TEMPLATE_STEP * fanIndex));
+        }
+
+        /// <summary>风盘 n 对应的内机 485 地址：0x91~0x9F。</summary>
+        public static byte GetFan4GDeviceAddress(int fanIndex)
+        {
+            if (fanIndex is < 1 or > FAN_4G_MAX_COUNT)
+                throw new ArgumentOutOfRangeException(nameof(fanIndex), "风盘序号必须在1到15之间");
+            return (byte)(0x90 + fanIndex);
+        }
+
+        /// <summary>
+        /// 判断地址是否落在风盘模板区（20060~20920）。n=0（20000~20020）按协议保留，不参与展示。
+        /// </summary>
+        public static bool TryGetFan4GOffset(ushort address, out int fanIndex, out ushort offset)
+        {
+            fanIndex = 0;
+            offset = 0;
+            if (address < FAN_4G_TEMPLATE_BASE_ADDR)
+                return false;
+
+            int delta = address - FAN_4G_TEMPLATE_BASE_ADDR;
+            int index = delta / FAN_4G_TEMPLATE_STEP;
+            int off = delta % FAN_4G_TEMPLATE_STEP;
+            if (index < 1 || index > FAN_4G_MAX_COUNT || off >= FAN_4G_TEMPLATE_COUNT)
+                return false;
+
+            fanIndex = index;
+            offset = (ushort)off;
+            return true;
+        }
+
+        /// <summary>从风盘在线状态位图（21017）取位，bit n = 风盘 n（bit0 保留）。</summary>
+        public static bool IsFan4GOnline(ushort onlineBitmap, int fanIndex) =>
+            fanIndex is >= 1 and <= FAN_4G_MAX_COUNT && (onlineBitmap & (1 << fanIndex)) != 0;
         #endregion
 
         #region --- 外机-4G在线状态 ---
@@ -357,13 +475,18 @@ namespace W_TB_MS.Models
         public const ushort MANIFOLD_STATUS_END_ADDR = 21015;
         public const ushort MANIFOLD_ONLINE_STATUS_ADDR = 21016;
         public const ushort FAN_4G_ONLINE_STATUS_ADDR = 21017;
+        public const int MANIFOLD_MAX_COUNT = 15;
 
         public static ushort GetManifold4GStatusAddress(int manifoldIndex)
         {
-            if (manifoldIndex is < 1 or > 15)
+            if (manifoldIndex is < 1 or > MANIFOLD_MAX_COUNT)
                 throw new ArgumentOutOfRangeException(nameof(manifoldIndex), "分集水器序号必须在1到15之间");
             return checked((ushort)(MANIFOLD_STATUS_START_ADDR + manifoldIndex - 1));
         }
+
+        /// <summary>从分集水器在线状态位图（21016）取位，bit n = n 号分集水器（bit0 保留）。</summary>
+        public static bool IsManifoldOnline(ushort onlineBitmap, int manifoldIndex) =>
+            manifoldIndex is >= 1 and <= MANIFOLD_MAX_COUNT && (onlineBitmap & (1 << manifoldIndex)) != 0;
         #endregion
 
         // ============================================================

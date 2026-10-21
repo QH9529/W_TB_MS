@@ -12,9 +12,36 @@ public class RegisterMapTests
     [InlineData(40105, RegisterAccess.WriteOnly)]
     [InlineData(40201, RegisterAccess.ReadWrite)]
     [InlineData(40308, RegisterAccess.ReadWrite)]
+    [InlineData(40401, RegisterAccess.ReadWrite)] // 单板产测密码读写段（协议读写）
+    [InlineData(40501, RegisterAccess.ReadWrite)] // 读写信息段：IMEI（协议读写）
+    [InlineData(40601, RegisterAccess.ReadWrite)] // 4G_OTA 读写段（协议读写）
+    [InlineData(40701, RegisterAccess.ReadWrite)] // 用户应用层 RAM 段
+    [InlineData(40801, RegisterAccess.ReadWrite)] // Flash 持久化读写段
     public void GetAccess_MatchesProtocolSections(ushort address, RegisterAccess expected)
     {
         Assert.Equal(expected, RegisterMap.GetAccess(address));
+    }
+
+    [Theory]
+    [InlineData(40401, true)]
+    [InlineData(40519, true)]
+    [InlineData(40674, true)]
+    [InlineData(40851, true)]
+    [InlineData(40324, false)]
+    [InlineData(40701, false)]
+    public void IsHighRiskWriteSegment_FlagsTestIdentityOtaFlashRanges(ushort address, bool expected)
+    {
+        Assert.Equal(expected, RegisterMap.IsHighRiskWriteSegment(address));
+    }
+
+    [Theory]
+    [InlineData(41001, "风盘设备（从机 0x91~0x9F）")]
+    [InlineData(42100, "地暖设备（从机 0xA1~0xAF）")]
+    [InlineData(43006, "MixPad 底壳（从机 0x51~0x5F）")]
+    [InlineData(40701, null)]
+    public void GetSlaveDeviceHint_MapsFanFloorMixpadRanges(ushort address, string? expected)
+    {
+        Assert.Equal(expected, RegisterMap.GetSlaveDeviceHint(address));
     }
 
     [Fact]
@@ -48,10 +75,47 @@ public class RegisterMapTests
     public void External4GAddressHelpers_MatchSpreadsheetFormula()
     {
         Assert.Equal((ushort)20060, RegisterMap.GetFan4GAddress(1, RegisterMap.FAN_4G_VALVE_OFFSET));
-        Assert.Equal((ushort)20911, RegisterMap.GetFan4GAddress(15, RegisterMap.FAN_4G_MODEL_OFFSET));
+        // V2.4 偏移：CO2=11、PM2.5=12、温度=13、湿度=14、型号=19、功能集=20
+        Assert.Equal((ushort)20071, RegisterMap.GetFan4GAddress(1, RegisterMap.FAN_4G_CO2_OFFSET));
+        Assert.Equal((ushort)20912, RegisterMap.GetFan4GAddress(15, RegisterMap.FAN_4G_PM25_OFFSET));
+        Assert.Equal((ushort)20913, RegisterMap.GetFan4GAddress(15, RegisterMap.FAN_4G_TEMPERATURE_OFFSET));
+        Assert.Equal((ushort)20919, RegisterMap.GetFan4GAddress(15, RegisterMap.FAN_4G_MODEL_OFFSET));
+        Assert.Equal((ushort)20080, RegisterMap.GetFan4GAddress(1, RegisterMap.FAN_4G_FEATURE_SET_OFFSET));
         Assert.Equal((ushort)21001, RegisterMap.GetManifold4GStatusAddress(1));
         Assert.Equal((ushort)21015, RegisterMap.GetManifold4GStatusAddress(15));
         Assert.Equal((ushort)30350, RegisterMap.GetFaultHistoryRecordAddress(10));
+    }
+
+    [Fact]
+    public void External4GFanTemplate_CoversAll15FansWithOnlineBitmap()
+    {
+        // 风盘 n（1~15）模板基址 = 20000 + 60×n，内机地址依次 0x91~0x9F
+        Assert.Equal((ushort)20060, RegisterMap.GetFan4GBaseAddress(1));
+        Assert.Equal((ushort)20900, RegisterMap.GetFan4GBaseAddress(15));
+        Assert.Equal((byte)0x91, RegisterMap.GetFan4GDeviceAddress(1));
+        Assert.Equal((byte)0x9F, RegisterMap.GetFan4GDeviceAddress(15));
+
+        // 偏移识别：仅 n=1~15 且偏移 0~20 落在风盘模板区（n=0 按协议保留）
+        Assert.True(RegisterMap.TryGetFan4GOffset(20060, out int fan, out ushort offset));
+        Assert.Equal(1, fan);
+        Assert.Equal(RegisterMap.FAN_4G_VALVE_OFFSET, offset);
+        Assert.True(RegisterMap.TryGetFan4GOffset(20920, out fan, out offset));
+        Assert.Equal(15, fan);
+        Assert.Equal(RegisterMap.FAN_4G_FEATURE_SET_OFFSET, offset);
+        Assert.False(RegisterMap.TryGetFan4GOffset(20000, out _, out _));
+        Assert.False(RegisterMap.TryGetFan4GOffset(20021, out _, out _));
+        Assert.False(RegisterMap.TryGetFan4GOffset(20921, out _, out _));
+        Assert.False(RegisterMap.TryGetFan4GOffset(21001, out _, out _));
+
+        // 21017 风盘在线位图：BIT1~BIT15 对应 1~15 号风盘，BIT0 保留
+        Assert.False(RegisterMap.IsFan4GOnline(0x0001, 1));
+        Assert.True(RegisterMap.IsFan4GOnline(0x0002, 1));
+        Assert.True(RegisterMap.IsFan4GOnline(0x8000, 15));
+        Assert.False(RegisterMap.IsFan4GOnline(0x0002, 2));
+
+        // 21016 分集水器在线位图同规则
+        Assert.True(RegisterMap.IsManifoldOnline(0x0004, 2));
+        Assert.False(RegisterMap.IsManifoldOnline(0x0004, 1));
     }
 
     [Fact]
